@@ -93,13 +93,20 @@ in, a live preview of the correction, and an editable list of the steps.
   reorder them, drop one from the middle, and the rest still apply. Undo/redo
   works over the whole session, and clearing the list gives back the original.
 
-  This is not only convenient. libjpeg's compressor fills the dummy blocks that
-  pad the last MCU column with a DC-only copy of their neighbour, so every
-  re-encode flattens one 8-pixel block column per MCU row. Those blocks are
-  outside the visible image, but insert and delete shift the stream *through*
-  them, so under a save-and-reapply model a second insert would drag the
-  flattened blocks into view as a stripe of detail-less squares. Replaying from
-  the original keeps the session to one encode and the hole never opens.
+  This is not only convenient. When an image's width is not a multiple of the
+  MCU width, the coefficient array carries a column of dummy blocks past the
+  right edge, and libjpeg overwrites them on the way out with a DC-only copy of
+  their neighbour: same DC, all AC zeroed. That happens on *every* write, not
+  just a re-encode, because `jpeg_write_coefficients` refills the dummy blocks
+  even when nothing was decoded to pixels. On its own it costs nothing, since
+  those blocks are outside the visible image and the decoder crops them away.
+  Insert and delete are what make it matter: they shift the stream *through*
+  those positions, so real picture data lands in the dummy column and is
+  flattened by the save. Under a save-and-reapply model the next insert would
+  then drag those flattened blocks back into view as a stripe of detail-less
+  squares. Replaying from the original keeps the session to a single write, so
+  the dummy column is only ever clobbered on the final save, with nothing left
+  to shift it into view.
 
 ## Installing
 
