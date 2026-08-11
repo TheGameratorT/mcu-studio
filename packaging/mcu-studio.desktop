@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=MCU Studio
+Comment=Repair damaged JPEGs by editing their DCT coefficients
+Exec=mcu-studio %f
+Icon=mcu-studio
+Terminal=false
+Categories=Graphics;2DGraphics;RasterGraphics;Photography;Qt;
+MimeType=image/jpeg;
+Keywords=JPEG;repair;recovery;DCT;MCU;ransomware;corrupt;photo;
+StartupNotify=true

@@ -1,0 +1,15 @@
+pkgbase = mcu-studio
+	pkgdesc = Repair damaged JPEGs by editing their DCT coefficients directly, with an MCU-level editor
+	pkgver = 1.0.0
+	pkgrel = 1
+	url = https://github.com/TheGameratorT/mcu-studio
+	arch = x86_64
+	license = GPL-3.0-only
+	makedepends = cmake
+	makedepends = qt6-tools
+	depends = qt6-base
+	depends = libjpeg-turbo
+	source = mcu-studio-1.0.0.tar.gz::https://github.com/TheGameratorT/mcu-studio/archive/v1.0.0.tar.gz
+	sha256sums = SKIP
+
+pkgname = mcu-studio

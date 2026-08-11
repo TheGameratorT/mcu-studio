@@ -1,0 +1,14 @@
+# Build directories
+build/
+build-*/
+
+# clangd / tooling caches
+.cache/
+compile_commands.json
+
+# Qt Creator / IDE local files
+CMakeLists.txt.user
+*.autosave
+
+# Claude Code local settings
+.claude/settings.local.json

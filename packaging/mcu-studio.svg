@@ -1,0 +1,49 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
+  <!-- MCU Studio: a photograph whose MCU grid is being repaired. The lower
+       right blocks are still damaged; the ones above have been recovered. -->
+  <defs>
+    <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#4a90c4"/>
+      <stop offset="1" stop-color="#bfe0f2"/>
+    </linearGradient>
+    <linearGradient id="hill" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#5fa860"/>
+      <stop offset="1" stop-color="#2f6b3a"/>
+    </linearGradient>
+  </defs>
+
+  <rect x="8" y="16" width="112" height="96" rx="8" fill="url(#sky)"
+        stroke="#22405c" stroke-width="5"/>
+
+  <!-- The picture: sun over hills, clipped to the frame. -->
+  <clipPath id="frame">
+    <rect x="10.5" y="18.5" width="107" height="91" rx="6"/>
+  </clipPath>
+  <g clip-path="url(#frame)">
+    <circle cx="36" cy="42" r="12" fill="#ffd35c"/>
+    <path d="M8 92l26-26 20 18 22-26 52 44v10H8z" fill="url(#hill)"/>
+
+    <!-- Corrupted MCUs: a wrapping run in scan order, the way damage
+         actually falls, rather than a rectangle. -->
+    <g fill="#1b1b1b">
+      <rect x="72" y="72" width="16" height="16"/>
+      <rect x="88" y="72" width="16" height="16" fill="#8e2b2b"/>
+      <rect x="104" y="72" width="16" height="16"/>
+      <rect x="8"  y="88" width="16" height="16" fill="#8e2b2b"/>
+      <rect x="24" y="88" width="16" height="16"/>
+    </g>
+
+    <!-- The MCU grid overlay. -->
+    <g stroke="#0f2233" stroke-width="1.5" opacity="0.35">
+      <path d="M24 18v92M40 18v92M56 18v92M72 18v92M88 18v92M104 18v92"/>
+      <path d="M10 40h108M10 56h108M10 72h108M10 88h108"/>
+    </g>
+
+    <!-- Selection marquee over the run being repaired. -->
+    <path d="M72 72h48v16H8v16h32" fill="none" stroke="#ffd35c"
+          stroke-width="3" stroke-linejoin="round"/>
+  </g>
+
+  <rect x="8" y="16" width="112" height="96" rx="8" fill="none"
+        stroke="#22405c" stroke-width="5"/>
+</svg>
