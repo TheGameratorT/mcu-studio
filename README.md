@@ -12,12 +12,29 @@ A Qt 6 desktop application for repairing JPEGs damaged by ransomware encryption
 shift the entropy-coded stream out of alignment or wreck a component's DC level.
 
 MCU Studio works at the level a JPEG is actually stored in, the **minimum coded
-unit** and the **DCT coefficients** inside it. Corrections are applied to
+unit** (MCU) and the **DCT coefficients** inside it. Corrections are applied to
 `jpeg_read_coefficients` arrays and written straight back out, so blocks you did
 not touch keep their exact coefficients and decode to precisely the pixels they
 did before. Repairing an image never costs a re-encode generation.
 
-## Why work in the coefficient domain?
+## What a repair looks like
+
+This is the kind of recovery the tool can achieve.
+
+![A damaged photo as MCU Studio first opens it](docs/screenshots/recover-before.jpg)
+
+*The file as it opens. The top of the picture survives; below it the stream has
+lost alignment, so the rest decodes as the wrong content at the wrong DC level.*
+
+![The same photo after twenty-five repair steps](docs/screenshots/recover-after.jpg)
+
+*The same file after 25 steps: twelve block inserts to bring the stream back
+into alignment, thirteen DC offsets to pull the color back. Every step is a
+coefficient move, so nothing here has been re-encoded. A few bands of damage
+remain, and the repair steps that produced this are still an editable list.
+(Faces blacked out for this README.)*
+
+## Why the coefficient domain?
 
 Ordinary image editors cannot help with these files. They decode to pixels,
 which means every save is a fresh lossy generation over the whole picture, and
@@ -26,87 +43,79 @@ that actually fix a broken JPEG (shift a component's DC level, insert or delete
 blocks to re-align a drifted scan, splice on a working header) have no
 expression in the pixel domain at all.
 
-The command-line tools that do work at this level exist, but they ask you to
-guess: you name a block range and a delta, run the tool, open the result, and
-look. MCU Studio puts that loop in one window, with the grid you are selecting
-in, a live preview of the correction, and an editable list of the steps.
+Command-line tools that do work at this level exist, but they ask you to guess:
+you name a block range and a number, run the tool, open the result, and look.
+MCU Studio puts that loop in one window, with the grid you are selecting in, a
+live preview of the correction, and an editable list of the steps.
 
 ## Features
 
 - **Donor headers, for files that will not open at all.** Ransomware, a bad
-  sector, or a truncated copy usually takes the front of the file (the
-  quantization and Huffman tables, the frame header, the scan header), and
-  nothing in the surviving picture data can replace them. A camera writes the
-  same header into every frame it shoots at the same settings, so another
-  photograph from the same card can lend its own. Point the tool at a sibling
-  and it splices that header onto the damaged file's data. It suggests one from
-  the same folder, ranks its guesses at where the surviving data resumes, and
-  previews each one, so a wrong guess costs a click. The donor's Exif, XMP and
-  comments are dropped on the way through (a rescued photograph should not
-  inherit another shot's date or GPS fix), while the damaged file's own Exif is
-  carried over whenever it survived.
-- **MCU grid with scan-order selection.** Select a run of blocks the way you
-  select text: click and drag, Shift+click to extend. Damage follows the
-  entropy-coded stream rather than the picture's geometry, so a wrapping run is
-  usually what you want, not a rectangle.
-- **Color correction (`cdelta`) per Y/Cb/Cr component, with live preview.** The
-  delta is calibrated against the image's own DC quantization step, and the
-  panel shows what shift it produces in 0-255 sample terms.
-- **Three correction scopes**, all lossless: selected blocks only, selection to
-  end of image, whole image.
-- **Automatic color matching.** Pick a reference block showing good color and a
-  target block showing the damage, and the tool derives the deltas. It warns
-  when either block has clipped samples (the match will fall short) or when the
-  two differ so much they probably are not the same content.
+  sector or a truncation takes the front of the file, and nothing in the
+  surviving picture data can replace it. Another photograph from the same card
+  carries the same header, so it can lend its own. The tool suggests a donor,
+  ranks its guesses at where the surviving data resumes, and previews each one,
+  so a wrong guess costs a click. The donor's Exif, XMP and comments are dropped
+  on the way through, so a rescued photograph never inherits another shot's date
+  or GPS fix.
+- **DC offsets per Y/Cb/Cr component, with live preview.** A constant added to
+  the quantized DC coefficient of every block in scope: the fix for a component
+  whose level has drifted. The panel calibrates the offset against the image's
+  own DC quantization step and shows what shift it produces in 0-255 sample
+  terms. Scope is the selection, the selection to the end of the image, or the
+  whole image, and all three are lossless.
+- **Automatic color matching.** Pick a block showing good color and a block
+  showing the damage, and the tool derives the offsets. It warns when either
+  block has clipped samples (the match will fall short) or when the two differ
+  so much they probably are not the same content.
 - **Reference color from another copy of the photograph.** A transplanted header
-  can leave nothing to match against *inside* the file: the borrowed tables never
-  described this data, so the picture can be the wrong color from its very first
-  block. Point the tool at any surviving copy instead (a thumbnail, a phone
-  gallery cache, a backup, a copy someone was sent, JPEG or not), drag a box over
-  the matching content, and the mean under it becomes the reference. Color is
-  what survives being shrunk, so a small or soft copy does the job, and only
-  three numbers cross over: none of that file's pixels reach the repair. The box
-  can be dropped where the target block falls in that copy, scaled for its size,
-  and the tool says so when a copy is grayscale and therefore has no chroma to
-  lend. A reference taken this way outlives every edit, because unlike a block of
-  the image under repair, it does not describe the render.
-- **Block operations:** insert, delete, and copy MCU blocks, the classic fix for
-  a stream that has lost or gained bytes.
+  can leave nothing to match against *inside* the file, since the picture may be
+  the wrong color from its very first block. Point the tool at any surviving
+  copy instead (a thumbnail, a gallery cache, a backup, JPEG or not) and drag a
+  box over the matching content. Color survives being shrunk, so a small or soft
+  copy does the job, and only three numbers cross over: none of that file's
+  pixels reach the repair.
+- **Block insert, delete and copy**, plus an MCU clipboard: the classic fix for
+  a stream that has lost or gained bytes. Selections run in scan order rather
+  than as a rectangle, because that is the order damage propagates in.
 - **Filling blocks from another copy of the photograph.** Every repair above
-  moves coefficients the file already has, which works while the picture data
-  survives somewhere in it. Where it does not (an overwritten stretch, a hole a
-  truncation left, blocks that decode to nothing), another copy can supply the
-  content: a re-render, an export, a backup, a frame from a video, a PNG an
-  earlier recovery attempt produced. Any format the system can read will do,
-  because what comes across is pixels rather than blocks. See
+  moves coefficients the file already has. Where it has none left (an
+  overwritten stretch, a hole a truncation left), another copy can supply the
+  content, in any format the system can read, because what comes across is
+  pixels rather than blocks. See
   [below](#filling-blocks-from-a-picture-that-is-not-a-jpeg) for what that costs
   and where the cost lands.
-- **Auto color:** white balance plus midtone contrast. This one is a pixel edit,
-  so it re-encodes, and the tool says so before it runs.
+- **Auto color:** white balance (a per-channel histogram stretch) plus a curve
+  that adds midtone contrast. This one is a pixel edit, so it re-encodes, and
+  the tool says so before it runs.
 - **Metadata and dates survive the repair.** Exif, ICC, XMP and comment markers
-  are carried into the output (including through the one lossy operation, auto
-  color), and the saved file is stamped with the original's modification and
-  access times, so a rescued folder still sorts by when the photos were taken.
+  are carried into the output, auto color included, and the saved file is
+  stamped with the original's modification and access times, so a rescued folder
+  still sorts by when the photos were taken.
 - **The repair is a list, not a result.** Every correction lands as a step in a
   side panel, and the image you see is the original file with the ticked steps
   replayed over it in a single pass. Untick one to see the picture without it,
   reorder them, drop one from the middle, and the rest still apply. Undo/redo
   works over the whole session, and clearing the list gives back the original.
 
-  This is not only convenient. When an image's width is not a multiple of the
-  MCU width, the coefficient array carries a column of dummy blocks past the
-  right edge, and libjpeg overwrites them on the way out with a DC-only copy of
-  their neighbour: same DC, all AC zeroed. That happens on *every* write, not
-  just a re-encode, because `jpeg_write_coefficients` refills the dummy blocks
-  even when nothing was decoded to pixels. On its own it costs nothing, since
-  those blocks are outside the visible image and the decoder crops them away.
-  Insert and delete are what make it matter: they shift the stream *through*
-  those positions, so real picture data lands in the dummy column and is
-  flattened by the save. Under a save-and-reapply model the next insert would
-  then drag those flattened blocks back into view as a stripe of detail-less
-  squares. Replaying from the original keeps the session to a single write, so
-  the dummy column is only ever clobbered on the final save, with nothing left
-  to shift it into view.
+<details>
+<summary>Replaying from the original is also what keeps insert and delete honest</summary>
+
+When an image's width is not a multiple of the MCU width, the coefficient array
+carries a column of dummy blocks past the right edge, and libjpeg overwrites
+them on the way out with a DC-only copy of their neighbour: same DC, all AC
+zeroed. That happens on *every* write, not just a re-encode, because
+`jpeg_write_coefficients` refills the dummy blocks even when nothing was decoded
+to pixels. On its own it costs nothing, since those blocks are outside the
+visible image and the decoder crops them away. Insert and delete are what make
+it matter: they shift the stream *through* those positions, so real picture data
+lands in the dummy column and is flattened by the save. Under a save-and-reapply
+model the next insert would then drag those flattened blocks back into view as a
+stripe of detail-less squares. Replaying from the original keeps the session to
+a single write, so the dummy column is only ever clobbered on the final save,
+with nothing left to shift it into view.
+
+</details>
 
 ## Installing
 
@@ -167,18 +176,23 @@ cmake --build build
 
 ## How it works
 
-`cdelta COMP dC` adds `dC` to the **quantized** DC coefficient of every block in
-scope. The dequantized DC therefore moves by `dC × Q00`, and because the JPEG DCT
-normalizes the DC term to eight times the block's mean sample, every sample in
-the block moves by:
+### DC offsets
+
+A DC offset adds a constant `dC` to the **quantized** DC coefficient of every
+block in scope. The dequantized DC therefore moves by `dC × Q00`, and because
+the JPEG DCT normalizes the DC term to eight times the block's mean sample,
+every sample in the block moves by:
 
 ```
 dC × Q00 / 8
 ```
 
-`Q00` is read from the image's own quantization tables and differs per component
-and per quality level. It is not a constant, which is why the tool reads it
-rather than assuming `dC / 8`.
+`Q00` is the DC entry of that component's quantization table, read from the
+image itself. It differs per component and per quality level, which is why the
+tool reads it rather than assuming `dC / 8`. (In the vendored jpegrepair
+library this operation is the one its command line calls `cdelta`.)
+
+### Block operations
 
 Insert and delete shift blocks forward or backward through the entropy-coded
 stream from the selected block onward, re-aligning a scan that has drifted.
@@ -186,6 +200,14 @@ Copy replaces each selected block with one a fixed number of MCUs away, and the
 clipboard lifts a run of whole MCUs out and writes it back somewhere else.
 
 ### Donor headers
+
+![The donor header dialog previewing a transplant](docs/screenshots/donor-header.jpg)
+
+*Opening a file whose first 150 KiB were destroyed, with another shot from the
+same camera roll standing in as the donor. The preview is the splice decoded:
+the surviving picture comes back shifted, because there is no way to know how
+much data went with the header, and it runs out early, because the overwritten
+bytes are gone for good. Insert and delete are what move the rest into place.*
 
 A transplant is the donor's bytes from `SOI` through the end of its `SOS`
 segment, followed by the damaged file's bytes from a chosen offset on. Choosing
@@ -206,8 +228,8 @@ The tool offers, in order:
    every `FF` is stuffed (`FF 00`), a restart marker, padding, or the `EOI`.
    Encrypted or random bytes break that rule roughly every 250 bytes, so the
    last violation in the file bounds the damage tightly.
-5. **150 KiB and 624 KiB**, the prefix lengths STOP/DJVU and its relatives are
-   commonly reported to encrypt.
+5. **150 KiB and 624 KiB**, prefix lengths that STOP/DJVU and its relatives are
+   reported to encrypt.
 
 None of these can be verified from the bytes, so each is judged by decoding it:
 the dialog splices, decodes and shows the result, and refuses to open a
@@ -227,8 +249,8 @@ under someone else's tables. That is what the clipboard's cross-file warning is
 about.
 
 A PNG has no coefficients at all, so nothing can be lifted from it. Its pixels
-have to be color converted, chroma downsampled, transformed and quantized before
-a JPEG can hold them, and no arrangement of that is lossless. What can be
+have to be color converted, chroma downsampled, transformed and quantized
+before a JPEG can hold them, and no arrangement of that is lossless. What can be
 bounded is where the loss lands:
 
 1. The selection's bounding box is expanded to whole MCUs, which it already is,
@@ -284,6 +306,7 @@ src/                        the Qt 6 application
 third_party/jpegrepair/     vendored jpegrepair, built as a library
 packaging/                  desktop entry, icons, AUR PKGBUILD
 installer/                  Windows NSIS installer
+docs/screenshots/           the images used above
 .github/workflows/          CI and releases
 ```
 
