@@ -102,7 +102,7 @@ struct Op {
 // Pixels turned into the blocks a particular JPEG would have stored for them.
 //
 // The one bridge into a JPEG from a picture that is not one. Nothing about it
-// is lossless -- pixels with no coefficients of their own have to be colour
+// is lossless -- pixels with no coefficients of their own have to be color
 // converted, downsampled, transformed and quantized to acquire any -- but the
 // loss is confined to the patch and denominated in the destination's own
 // quantization, and every block outside it keeps the coefficients it had.
@@ -120,7 +120,7 @@ struct Patch {
 };
 
 // Three interleaved 8-bit channels, either RGB or YCbCr depending on how it
-// was decoded. Kept as raw samples rather than a QImage because the colour
+// was decoded. Kept as raw samples rather than a QImage because the color
 // maths wants YCbCr, which QImage has no format for.
 struct Samples {
     QByteArray data;
@@ -215,7 +215,7 @@ std::optional<QByteArray> apply(const QByteArray &jpeg, const QVector<Op> &ops,
 
 std::optional<Samples> decodeRgb(const QByteArray &jpeg, QString *error = nullptr);
 // The JPEG's own YCbCr samples, with no clipping to the RGB gamut -- see the
-// note in jpegrepair_core.h on why that matters for measuring colour.
+// note in jpegrepair_core.h on why that matters for measuring color.
 std::optional<Samples> decodeYCbCr(const QByteArray &jpeg, QString *error = nullptr);
 
 // markerSource is the JPEG the pixels came from; its Exif and other metadata

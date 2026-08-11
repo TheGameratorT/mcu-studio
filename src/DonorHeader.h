@@ -19,7 +19,7 @@
 // The result is not the original file: the picture will usually be shifted,
 // because the number of MCUs lost with the header is unknown. That is what the
 // rest of the tool is for -- insert and delete blocks to slide the stream back
-// into place, cdelta to pull the colour back. This module's job is only to get
+// into place, cdelta to pull the color back. This module's job is only to get
 // the door open.
 #pragma once
 
@@ -67,7 +67,7 @@ struct SplicePoint {
     qsizetype offset = 0;
     QString reason; // shown in the chooser
     // Filled in when this resume point does not exist in this file. The entry
-    // is still listed, greyed out and carrying the explanation, because a
+    // is still listed, grayed out and carrying the explanation, because a
     // choice that silently disappears reads as a tool with fewer ideas than it
     // has -- "there is no scan header left to start after" is the useful thing
     // to know.

@@ -21,17 +21,17 @@ bool looksLikeJpeg(const QByteArray &bytes)
     return bytes.size() >= 2 && quint8(bytes.at(0)) == 0xFF && quint8(bytes.at(1)) == 0xD8;
 }
 
-// Whether the picture has any colour to lend.
+// Whether the picture has any color to lend.
 //
 // Read off the samples rather than the component count, because the component
 // count only catches half of it: a one-component JPEG decodes to Cb = Cr = 128,
 // but so does a perfectly ordinary three-component JPEG that happens to store a
-// greyscale picture -- which is what a "black and white" export from most tools
+// grayscale picture -- which is what a "black and white" export from most tools
 // is. Either way there is no chroma in the file, so a match would drag the
-// damaged image's colour to neutral instead of restoring it.
+// damaged image's color to neutral instead of restoring it.
 //
 // A real photograph, however drab, has some samples off neutral; the tolerance
-// is there for rounding in the conversion, not for grey-ish pictures.
+// is there for rounding in the conversion, not for gray-ish pictures.
 bool neutralChroma(const jr::Samples &ycbcr)
 {
     constexpr int kTolerance = 1;
@@ -138,15 +138,15 @@ std::optional<Loaded> load(const QString &path, QString *error)
     return loadViaQt(bytes, error);
 }
 
-QRect centredIn(QRect rect, QPoint centre, QSize bounds)
+QRect centerdIn(QRect rect, QPoint center, QSize bounds)
 {
     if (rect.isEmpty() || bounds.isEmpty())
         return QRect();
 
     const int w = std::min(rect.width(), bounds.width());
     const int h = std::min(rect.height(), bounds.height());
-    const int x = std::clamp(centre.x() - w / 2, 0, bounds.width() - w);
-    const int y = std::clamp(centre.y() - h / 2, 0, bounds.height() - h);
+    const int x = std::clamp(center.x() - w / 2, 0, bounds.width() - w);
+    const int y = std::clamp(center.y() - h / 2, 0, bounds.height() - h);
     return QRect(x, y, w, h);
 }
 
@@ -160,9 +160,9 @@ QRect correspondingRect(QRect rect, QSize subjectSize, QSize referenceSize, int 
 
     const int w = std::max(minEdge, int(std::lround(rect.width() * sx)));
     const int h = std::max(minEdge, int(std::lround(rect.height() * sy)));
-    const QPoint centre(int(std::lround((rect.x() + rect.width() / 2.0) * sx)),
+    const QPoint center(int(std::lround((rect.x() + rect.width() / 2.0) * sx)),
                         int(std::lround((rect.y() + rect.height() / 2.0) * sy)));
-    return centredIn(QRect(0, 0, w, h), centre, referenceSize);
+    return centerdIn(QRect(0, 0, w, h), center, referenceSize);
 }
 
 } // namespace refimage

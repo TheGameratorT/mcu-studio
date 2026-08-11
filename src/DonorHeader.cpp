@@ -157,7 +157,7 @@ bool payloadIs(const QByteArray &jpeg, const Segment &seg, const char *signature
 // onto the rescued file, and its thumbnail would show the wrong picture, so
 // those go. The ones that change how the data decodes stay, because for the
 // donor's tables the donor's are the right ones: JFIF's pixel density, Adobe's
-// colour transform flag, and the ICC profile -- which for a camera roll is the
+// color transform flag, and the ICC profile -- which for a camera roll is the
 // same profile the damaged file had.
 bool isIdentityMarker(const QByteArray &jpeg, const Segment &seg)
 {
@@ -431,7 +431,7 @@ std::optional<Splice> splice(const QByteArray &donorBytes, const Layout &donorLa
     out.bytes = std::move(header);
     out.bytes.append(broken.constData() + offset, broken.size() - offset);
     // A stream that just stops makes libjpeg complain about a premature end
-    // and fill the rest grey, which is fine, but it should still be told where
+    // and fill the rest gray, which is fine, but it should still be told where
     // the data ran out.
     if (!out.bytes.endsWith(QByteArray("\xFF\xD9", 2)))
         out.bytes.append("\xFF\xD9", 2);

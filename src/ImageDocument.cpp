@@ -226,7 +226,7 @@ std::optional<QByteArray> ImageDocument::render(const QVector<RepairStep> &steps
             continue;
         }
 
-        // Auto colour reads pixels, so everything queued has to be real bytes
+        // Auto color reads pixels, so everything queued has to be real bytes
         // before it runs. This is the one place the chain breaks, and it is
         // also the one step that already costs a generation.
         if (!flush())
@@ -296,11 +296,11 @@ bool ImageDocument::addOps(const QVector<jr::Op> &ops, const QString &descriptio
     return commitSteps(next, error);
 }
 
-bool ImageDocument::addAutoColour(const QString &description, QString *error)
+bool ImageDocument::addAutoColor(const QString &description, QString *error)
 {
     QVector<RepairStep> next = m_steps;
     RepairStep step;
-    step.kind = RepairStep::Kind::AutoColour;
+    step.kind = RepairStep::Kind::AutoColor;
     step.description = description;
     next.append(step);
     return commitSteps(next, error);

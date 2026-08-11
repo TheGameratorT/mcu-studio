@@ -44,7 +44,7 @@ BlockStats measure(const jr::Samples &samples, QRect pixelRect);
 // The pixel rectangle covered by an MCU, clipped to the image bounds.
 QRect mcuRect(const jr::Info &info, int row, int col);
 
-// The colour a measured YCbCr mean stands for, so a patch's average can be
+// The color a measured YCbCr mean stands for, so a patch's average can be
 // shown as a swatch instead of three numbers. This is JFIF's full-range
 // conversion, the one libjpeg's decoder applies.
 QColor rgbForYCbCr(const double ycbcr[3]);

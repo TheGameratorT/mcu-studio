@@ -48,7 +48,7 @@
 #include "DonorHeaderDialog.h"
 #include "McuGraphicsView.h"
 #include "PlatformStyle.h"
-#include "ReferenceColourDialog.h"
+#include "ReferenceColorDialog.h"
 #include "ReferenceFill.h"
 #include "ReferenceFillDialog.h"
 
@@ -62,7 +62,7 @@ constexpr int kPreviewDebounceMs = 90;
 // would be recomputed on every mouse move during a drag.
 constexpr qint64 kMaxMeasuredMcus = 60000;
 
-// A block whose samples are this heavily clipped makes a colour match unsafe.
+// A block whose samples are this heavily clipped makes a color match unsafe.
 constexpr double kClippedSampleWarning = 0.01;
 
 // Beyond this the reference and target probably are not the same content.
@@ -363,7 +363,7 @@ QWidget *MainWindow::buildControlPanel()
     layout->setSpacing(10);
     layout->addWidget(buildImageGroup());
     layout->addWidget(buildSelectionGroup());
-    layout->addWidget(buildColourGroup());
+    layout->addWidget(buildColorGroup());
     layout->addWidget(buildBlockGroup());
     layout->addStretch(1);
     return panel;
@@ -389,9 +389,9 @@ QGroupBox *MainWindow::buildSelectionGroup()
     m_selectionLabel->setWordWrap(true);
     layout->addWidget(m_selectionLabel);
 
-    m_selectionColourLabel = new QLabel(box);
-    m_selectionColourLabel->setWordWrap(true);
-    layout->addWidget(m_selectionColourLabel);
+    m_selectionColorLabel = new QLabel(box);
+    m_selectionColorLabel->setWordWrap(true);
+    layout->addWidget(m_selectionColorLabel);
 
     QHBoxLayout *buttons = new QHBoxLayout;
     QPushButton *selectAll = new QPushButton(tr("Select all"), box);
@@ -412,7 +412,7 @@ QGroupBox *MainWindow::buildSelectionGroup()
     return box;
 }
 
-QGroupBox *MainWindow::buildColourGroup()
+QGroupBox *MainWindow::buildColorGroup()
 {
     QGroupBox *box = new QGroupBox(tr("Color correction"));
     QVBoxLayout *layout = new QVBoxLayout(box);
@@ -460,11 +460,11 @@ QGroupBox *MainWindow::buildColourGroup()
     layout->addLayout(sliderGrid);
 
     QHBoxLayout *applyRow = new QHBoxLayout;
-    m_applyColourButton = new QPushButton(tr("Apply correction"), box);
+    m_applyColorButton = new QPushButton(tr("Apply correction"), box);
     m_resetDeltasButton = new QPushButton(tr("Reset"), box);
-    connect(m_applyColourButton, &QPushButton::clicked, this, &MainWindow::onApplyColour);
+    connect(m_applyColorButton, &QPushButton::clicked, this, &MainWindow::onApplyColor);
     connect(m_resetDeltasButton, &QPushButton::clicked, this, &MainWindow::onResetDeltas);
-    applyRow->addWidget(m_applyColourButton);
+    applyRow->addWidget(m_applyColorButton);
     applyRow->addWidget(m_resetDeltasButton);
     layout->addLayout(applyRow);
 
@@ -513,7 +513,7 @@ QGroupBox *MainWindow::buildColourGroup()
     layout->addWidget(m_targetLabel);
 
     m_matchButton = new QPushButton(tr("Set deltas from match"), box);
-    connect(m_matchButton, &QPushButton::clicked, this, &MainWindow::onMatchColours);
+    connect(m_matchButton, &QPushButton::clicked, this, &MainWindow::onMatchColors);
     layout->addWidget(m_matchButton);
 
     m_matchWarningLabel = new QLabel(box);
@@ -527,11 +527,11 @@ QGroupBox *MainWindow::buildColourGroup()
     rule2->setFrameShadow(QFrame::Sunken);
     layout->addWidget(rule2);
 
-    QPushButton *autoColour = new QPushButton(tr("Auto color (white balance + clarity)"), box);
-    autoColour->setToolTip(tr("A pixel-domain correction, so unlike everything else here it "
+    QPushButton *autoColor = new QPushButton(tr("Auto color (white balance + clarity)"), box);
+    autoColor->setToolTip(tr("A pixel-domain correction, so unlike everything else here it "
                               "re-encodes the whole image."));
-    connect(autoColour, &QPushButton::clicked, this, &MainWindow::onAutoColour);
-    layout->addWidget(autoColour);
+    connect(autoColor, &QPushButton::clicked, this, &MainWindow::onAutoColor);
+    layout->addWidget(autoColor);
 
     return box;
 }
@@ -951,7 +951,7 @@ void MainWindow::changeEvent(QEvent *event)
 {
     QMainWindow::changeEvent(event);
     // The desktop toggled light<->dark while we're running. Standard widgets
-    // re-read the new palette on their own; the warning label's colour is a
+    // re-read the new palette on their own; the warning label's color is a
     // fixed hex chosen for the old scheme, so re-pick it. (ApplicationPaletteChange
     // is the usual signal; ThemeChange covers the same on some platforms. Both
     // can arrive before buildUi() has run.)
@@ -1129,7 +1129,7 @@ void MainWindow::refreshStepList()
             tr("%1. %2").arg(i + 1).arg(step.description), m_stepList);
         item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
         item->setCheckState(step.enabled ? Qt::Checked : Qt::Unchecked);
-        if (step.kind == RepairStep::Kind::AutoColour) {
+        if (step.kind == RepairStep::Kind::AutoColor) {
             item->setToolTip(tr("Pixel-domain, so this step re-encodes. Steps after it are "
                                 "applied to the re-encoded image."));
         }
@@ -1217,7 +1217,7 @@ void MainWindow::onBlockPicked(McuGridItem::PickMode mode, int row, int col)
 }
 
 // ---------------------------------------------------------------------------
-// Colour correction
+// Color correction
 // ---------------------------------------------------------------------------
 
 MainWindow::ScopeChoice MainWindow::scopeChoice() const
@@ -1272,7 +1272,7 @@ int MainWindow::deltaFor(int component) const
     return m_spins[component] ? m_spins[component]->value() : 0;
 }
 
-bool MainWindow::hasPendingColourEdit() const
+bool MainWindow::hasPendingColorEdit() const
 {
     if (!m_doc.isOpen())
         return false;
@@ -1281,10 +1281,10 @@ bool MainWindow::hasPendingColourEdit() const
     return deltaFor(0) != 0 || deltaFor(1) != 0 || deltaFor(2) != 0;
 }
 
-QVector<jr::Op> MainWindow::pendingColourOps() const
+QVector<jr::Op> MainWindow::pendingColorOps() const
 {
     QVector<jr::Op> ops;
-    if (!hasPendingColourEdit())
+    if (!hasPendingColorEdit())
         return ops;
 
     const jr::Scope scope = currentScope();
@@ -1349,7 +1349,7 @@ void MainWindow::onPickReferenceFromImage()
                                          .arg(m_targetCol)
                                    : QString();
 
-    ReferenceColourDialog dialog(path, QSize(info.width, info.height), targetRect, targetName,
+    ReferenceColorDialog dialog(path, QSize(info.width, info.height), targetRect, targetName,
                                  this);
     if (dialog.exec() != QDialog::Accepted)
         return;
@@ -1369,7 +1369,7 @@ void MainWindow::onPickReferenceFromImage()
             .arg(describeReferenceSource(), formatTriple(m_referenceStats->mean)));
 }
 
-void MainWindow::onMatchColours()
+void MainWindow::onMatchColors()
 {
     if (!m_referenceStats || !m_targetStats) {
         QMessageBox::information(this, tr("Pick a reference and a target"),
@@ -1401,14 +1401,14 @@ void MainWindow::onMatchColours()
     schedulePreview();
 }
 
-void MainWindow::onApplyColour()
+void MainWindow::onApplyColor()
 {
     if (!requireImage())
         return;
     if (scopeChoice() != ScopeChoice::WholeImage && !requireSelection())
         return;
 
-    const QVector<jr::Op> ops = pendingColourOps();
+    const QVector<jr::Op> ops = pendingColorOps();
     if (ops.isEmpty()) {
         QMessageBox::information(this, tr("Nothing to apply"),
                                  tr("All three deltas are zero."));
@@ -1424,7 +1424,7 @@ void MainWindow::onApplyColour()
         onResetDeltas();
 }
 
-void MainWindow::onAutoColour()
+void MainWindow::onAutoColor()
 {
     if (!requireImage())
         return;
@@ -1444,7 +1444,7 @@ void MainWindow::onAutoColour()
 
     QApplication::setOverrideCursor(Qt::WaitCursor);
     QString error;
-    const bool ok = m_doc.addAutoColour(description, &error);
+    const bool ok = m_doc.addAutoColor(description, &error);
     QApplication::restoreOverrideCursor();
 
     if (!ok) {
@@ -1680,7 +1680,7 @@ void MainWindow::schedulePreview()
 {
     if (!m_doc.isOpen())
         return;
-    if (!hasPendingColourEdit()) {
+    if (!hasPendingColorEdit()) {
         cancelPreview();
         showBaseline();
         return;
@@ -1705,7 +1705,7 @@ void MainWindow::showBaseline()
 
 void MainWindow::onPreviewTimeout()
 {
-    const QVector<jr::Op> ops = pendingColourOps();
+    const QVector<jr::Op> ops = pendingColorOps();
     if (ops.isEmpty()) {
         showBaseline();
         return;
@@ -1832,7 +1832,7 @@ void MainWindow::updateActionStates()
         m_sliders[c]->setEnabled(open);
         m_spins[c]->setEnabled(open);
     }
-    m_applyColourButton->setEnabled(hasPendingColourEdit());
+    m_applyColorButton->setEnabled(hasPendingColorEdit());
     m_resetDeltasButton->setEnabled(open);
     m_pickReferenceButton->setEnabled(open);
     m_pickTargetButton->setEnabled(open);
@@ -1879,7 +1879,7 @@ void MainWindow::updateSelectionInfo()
 {
     if (!m_doc.isOpen() || !m_grid->hasSelection()) {
         m_selectionLabel->setText(tr("No blocks selected."));
-        m_selectionColourLabel->clear();
+        m_selectionColorLabel->clear();
         return;
     }
 
@@ -1896,7 +1896,7 @@ void MainWindow::updateSelectionInfo()
                                   .arg(lastCol));
 
     if (count > kMaxMeasuredMcus) {
-        m_selectionColourLabel->setText(tr("Selection too large to measure."));
+        m_selectionColorLabel->setText(tr("Selection too large to measure."));
         return;
     }
 
@@ -1915,11 +1915,11 @@ void MainWindow::updateSelectionInfo()
     }
 
     if (samples == 0) {
-        m_selectionColourLabel->clear();
+        m_selectionColorLabel->clear();
         return;
     }
     const double mean[3] = {sum[0] / samples, sum[1] / samples, sum[2] / samples};
-    m_selectionColourLabel->setText(tr("Mean  %1").arg(formatTriple(mean)));
+    m_selectionColorLabel->setText(tr("Mean  %1").arg(formatTriple(mean)));
 }
 
 void MainWindow::updateDeltaLabels()
@@ -2000,7 +2000,7 @@ void MainWindow::updateMatchInfo()
 
         // Cb and Cr came back as a flat 128 because the reference has no chroma
         // to give, not because the picture is neutral there. Matching all three
-        // channels against it would drain the colour it is meant to restore.
+        // channels against it would drain the color it is meant to restore.
         if (m_reference.monochrome) {
             warnings << tr("The reference image is grayscale, so its Cb and Cr are neutral 128 "
                            "whatever it shows. Match Y and leave the Cb and Cr deltas at zero, "

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // Part of MCU Studio. See LICENSE and THIRD-PARTY-NOTICES.md.
 
-#include "ReferenceColourDialog.h"
+#include "ReferenceColorDialog.h"
 
 #include <QDialogButtonBox>
 #include <QFileDialog>
@@ -32,13 +32,13 @@ constexpr int kViewHeight = 340;
 
 // A patch outline this small on screen is invisible, and a patch two reference
 // pixels across is exactly what a thumbnail gives -- so the outline is drawn no
-// smaller than this, around the same centre, even when the patch itself is.
+// smaller than this, around the same center, even when the patch itself is.
 constexpr qreal kMinOutlinePx = 11.0;
 
 // Matches the main window's threshold for calling a match unsafe.
 constexpr double kClippedSampleWarning = 0.01;
 
-// Below this the mean is one or two pixels' worth of noise rather than a colour.
+// Below this the mean is one or two pixels' worth of noise rather than a color.
 constexpr qint64 kThinPatchSamples = 16;
 
 } // namespace
@@ -89,7 +89,7 @@ void ReferencePatchView::rescale()
         return;
     }
     const QSize room = contentsRect().size();
-    // Nearest-neighbour when magnifying: a thumbnail blown up to fill the panel
+    // Nearest-neighbor when magnifying: a thumbnail blown up to fill the panel
     // should show the pixels it really has, since those are what gets measured.
     const bool magnifying = room.width() > m_image.width() || room.height() > m_image.height();
     m_scaled = QPixmap::fromImage(m_image).scaled(
@@ -137,10 +137,10 @@ void ReferencePatchView::paintEvent(QPaintEvent *event)
     QRectF outline(drawn.x() + m_patch.x() * sx, drawn.y() + m_patch.y() * sy,
                    m_patch.width() * sx, m_patch.height() * sy);
     if (outline.width() < kMinOutlinePx || outline.height() < kMinOutlinePx) {
-        const QPointF centre = outline.center();
+        const QPointF center = outline.center();
         outline.setSize(QSizeF(std::max(outline.width(), kMinOutlinePx),
                                std::max(outline.height(), kMinOutlinePx)));
-        outline.moveCenter(centre);
+        outline.moveCenter(center);
     }
 
     // Black under white, so the box reads on any content it is dropped onto.
@@ -157,10 +157,10 @@ void ReferencePatchView::dragTo(const QPointF &widgetPos)
     if (drawn.isEmpty() || m_patch.isEmpty())
         return;
 
-    const QPoint centre(
+    const QPoint center(
         int(std::floor((widgetPos.x() - drawn.x()) / drawn.width() * m_image.width())),
         int(std::floor((widgetPos.y() - drawn.y()) / drawn.height() * m_image.height())));
-    const QRect moved = refimage::centredIn(m_patch, centre, m_image.size());
+    const QRect moved = refimage::centerdIn(m_patch, center, m_image.size());
     if (moved == m_patch || moved.isEmpty())
         return;
 
@@ -185,7 +185,7 @@ void ReferencePatchView::mouseMoveEvent(QMouseEvent *event)
 // The dialog
 // ---------------------------------------------------------------------------
 
-ReferenceColourDialog::ReferenceColourDialog(const QString &path, QSize subjectSize,
+ReferenceColorDialog::ReferenceColorDialog(const QString &path, QSize subjectSize,
                                              QRect targetRect, const QString &targetName,
                                              QWidget *parent)
     : QDialog(parent)
@@ -197,7 +197,7 @@ ReferenceColourDialog::ReferenceColourDialog(const QString &path, QSize subjectS
     setReference(path); // reports its own failure in the status line
 }
 
-void ReferenceColourDialog::buildUi(const QString &targetName)
+void ReferenceColorDialog::buildUi(const QString &targetName)
 {
     QVBoxLayout *layout = new QVBoxLayout(this);
 
@@ -222,7 +222,7 @@ void ReferenceColourDialog::buildUi(const QString &targetName)
     m_pathEdit->setReadOnly(true);
     m_pathEdit->setPlaceholderText(tr("No image chosen yet"));
     QPushButton *browse = new QPushButton(tr("Change…"), this);
-    connect(browse, &QPushButton::clicked, this, &ReferenceColourDialog::onBrowse);
+    connect(browse, &QPushButton::clicked, this, &ReferenceColorDialog::onBrowse);
     pathRow->addWidget(m_pathEdit, 1);
     pathRow->addWidget(browse);
     form->addRow(tr("Reference image:"), pathRow);
@@ -244,13 +244,13 @@ void ReferenceColourDialog::buildUi(const QString &targetName)
     m_sizeHint = tr("How wide a patch is averaged, in this image's own pixels. Wider steadies "
                     "the mean; narrower keeps it on one piece of content.");
     connect(m_sizeSpin, &QSpinBox::valueChanged, this,
-            &ReferenceColourDialog::onPatchSizeChanged);
+            &ReferenceColorDialog::onPatchSizeChanged);
     controls->addWidget(new QLabel(tr("Patch:"), this));
     controls->addWidget(m_sizeSpin);
     controls->addSpacing(12);
 
     m_alignButton = new QPushButton(tr("Put it where the target block is"), this);
-    connect(m_alignButton, &QPushButton::clicked, this, &ReferenceColourDialog::onAlignToTarget);
+    connect(m_alignButton, &QPushButton::clicked, this, &ReferenceColorDialog::onAlignToTarget);
     // Kept on show even when it cannot be used, with the reason in its tooltip:
     // "there is no target block to line up with" is worth knowing.
     m_alignHint = tr("Puts the patch where %1 falls in this copy, scaled for its size. Only a "
@@ -300,7 +300,7 @@ void ReferenceColourDialog::buildUi(const QString &targetName)
 // The reference image
 // ---------------------------------------------------------------------------
 
-bool ReferenceColourDialog::setReference(const QString &path)
+bool ReferenceColorDialog::setReference(const QString &path)
 {
     QString error;
     const auto loaded = refimage::load(path, &error);
@@ -325,7 +325,7 @@ bool ReferenceColourDialog::setReference(const QString &path)
     QRect patch = refimage::correspondingRect(m_targetRect, m_subjectSize, size);
     if (patch.isEmpty()) {
         const int edge = std::clamp(std::min(size.width(), size.height()) / 16, 2, 32);
-        patch = refimage::centredIn(QRect(0, 0, edge, edge),
+        patch = refimage::centerdIn(QRect(0, 0, edge, edge),
                                     QPoint(size.width() / 2, size.height() / 2), size);
     }
 
@@ -338,7 +338,7 @@ bool ReferenceColourDialog::setReference(const QString &path)
     return true;
 }
 
-void ReferenceColourDialog::onBrowse()
+void ReferenceColorDialog::onBrowse()
 {
     const QString start = m_path.isEmpty() ? QString() : QFileInfo(m_path).absolutePath();
     const QString path = QFileDialog::getOpenFileName(
@@ -348,35 +348,35 @@ void ReferenceColourDialog::onBrowse()
         setReference(path);
 }
 
-void ReferenceColourDialog::onPatchSizeChanged(int size)
+void ReferenceColorDialog::onPatchSizeChanged(int size)
 {
     if (m_updatingControls || !m_loaded.isValid())
         return;
     const QRect current = m_view->patch();
-    setPatch(refimage::centredIn(QRect(0, 0, size, size),
+    setPatch(refimage::centerdIn(QRect(0, 0, size, size),
                                  current.isEmpty() ? QPoint(m_loaded.size().width() / 2,
                                                             m_loaded.size().height() / 2)
                                                    : current.center(),
                                  m_loaded.size()));
 }
 
-void ReferenceColourDialog::onAlignToTarget()
+void ReferenceColorDialog::onAlignToTarget()
 {
     if (!m_loaded.isValid() || m_targetRect.isEmpty())
         return;
     const QRect corresponding =
         refimage::correspondingRect(m_targetRect, m_subjectSize, m_loaded.size());
-    setPatch(refimage::centredIn(QRect(0, 0, m_sizeSpin->value(), m_sizeSpin->value()),
+    setPatch(refimage::centerdIn(QRect(0, 0, m_sizeSpin->value(), m_sizeSpin->value()),
                                  corresponding.center(), m_loaded.size()));
 }
 
-void ReferenceColourDialog::setPatch(QRect patch)
+void ReferenceColorDialog::setPatch(QRect patch)
 {
     m_view->setPatch(patch);
     remeasure();
 }
 
-void ReferenceColourDialog::remeasure()
+void ReferenceColorDialog::remeasure()
 {
     m_stats = colormath::measure(m_loaded.ycbcr, m_view->patch());
     m_useButton->setEnabled(m_stats.isValid());

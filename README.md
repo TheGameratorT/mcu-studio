@@ -103,7 +103,7 @@ live preview of the correction, and an editable list of the steps.
 
 When an image's width is not a multiple of the MCU width, the coefficient array
 carries a column of dummy blocks past the right edge, and libjpeg overwrites
-them on the way out with a DC-only copy of their neighbour: same DC, all AC
+them on the way out with a DC-only copy of their neighbor: same DC, all AC
 zeroed. That happens on *every* write, not just a re-encode, because
 `jpeg_write_coefficients` refills the dummy blocks even when nothing was decoded
 to pixels. On its own it costs nothing, since those blocks are outside the
@@ -269,9 +269,9 @@ selection, and zero outside it.
 
 Pixels just outside the patch can still shift by a level or two, and this is not
 a re-encode leaking. Chroma is stored at half resolution, so the decoder
-interpolates each chroma sample across its neighbours on the way out, and a
+interpolates each chroma sample across its neighbors on the way out, and a
 changed block at the boundary therefore changes the pixel column beside it. The
-coefficients there are untouched: it is the decoder reading a new neighbour.
+coefficients there are untouched: it is the decoder reading a new neighbor.
 
 ### Matching color against another copy
 

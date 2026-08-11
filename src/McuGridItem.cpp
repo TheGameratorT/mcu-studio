@@ -12,7 +12,7 @@
 
 namespace {
 // Below this on-screen spacing the grid stops describing the image and
-// starts covering it, so it is skipped rather than drawn as a grey wash.
+// starts covering it, so it is skipped rather than drawn as a gray wash.
 constexpr qreal kMinGridSpacingPx = 5.0;
 
 const QColor kSelectionFill(64, 160, 255, 70);

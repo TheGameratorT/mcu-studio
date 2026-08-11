@@ -129,7 +129,7 @@ int jr_read_mcus(const uint8_t *in, size_t in_len, int row, int col, int count,
    JR_OP_PASTE into `ref` itself, and *out_mcus_x/y report the grid it covers.
 
    This is the one way pixels that were never in a JPEG can enter one. They
-   have no coefficients of their own, so a colour conversion, a chroma
+   have no coefficients of their own, so a color conversion, a chroma
    downsample, a forward DCT and a quantization all have to happen -- there is
    no lossless path for them, and any tool that claims otherwise is re-encoding
    somewhere you cannot see. What is on offer instead is that the cost stops at
@@ -137,7 +137,7 @@ int jr_read_mcus(const uint8_t *in, size_t in_len, int row, int col, int count,
    tables and sampling factors, so the blocks handed back are the ones `ref`
    would hold had it been shot with this content, and every block outside the
    patch keeps the coefficients it already had. One generation, on the new data
-   only, in the same currency as its neighbours. */
+   only, in the same currency as its neighbors. */
 int jr_quantize_patch(const uint8_t *ref, size_t ref_len,
                       const uint8_t *rgb, int width, int height,
                       int16_t **out, size_t *out_count,
@@ -145,7 +145,7 @@ int jr_quantize_patch(const uint8_t *ref, size_t ref_len,
                       char *err, size_t err_len);
 
 /* Decodes to 3 interleaved 8-bit channels. `ycbcr` selects the JPEG's own
-   YCbCr samples over RGB -- worth using when measuring colour, because the
+   YCbCr samples over RGB -- worth using when measuring color, because the
    RGB conversion clips out-of-range components and drags chroma toward
    neutral on exactly the damaged blocks this tool exists to fix. */
 int jr_decode(const uint8_t *in, size_t in_len, int ycbcr,

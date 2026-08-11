@@ -32,7 +32,7 @@ qt_standard_project_setup()
 
 # ---------------------------------------------------------------------------
 # Vendored jpegrepair, built as a library rather than a command-line program.
-# Sources and licences live in third_party/jpegrepair; see THIRD-PARTY-NOTICES.md.
+# Sources and licenses live in third_party/jpegrepair; see THIRD-PARTY-NOTICES.md.
 # ---------------------------------------------------------------------------
 
 add_library(jpegrepair_core STATIC
@@ -70,8 +70,8 @@ qt_add_executable(mcu-studio
     src/MainWindow.cpp
     src/MainWindow.h
     src/PlatformStyle.h
-    src/ReferenceColourDialog.cpp
-    src/ReferenceColourDialog.h
+    src/ReferenceColorDialog.cpp
+    src/ReferenceColorDialog.h
     src/ReferenceFill.cpp
     src/ReferenceFill.h
     src/ReferenceFillDialog.cpp

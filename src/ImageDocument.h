@@ -7,7 +7,7 @@
 // image on screen is what you get by replaying the enabled ones. Nothing is
 // ever applied on top of an earlier apply's output, which matters more than it
 // sounds: libjpeg's compressor fills the dummy blocks that pad the last MCU
-// column with a DC-only copy of their neighbour, so every re-encode silently
+// column with a DC-only copy of their neighbor, so every re-encode silently
 // flattens one 8-pixel block column per MCU row. Those blocks are outside the
 // visible image, but insert and delete shift the stream *through* them, and a
 // second pass drags the flattened blocks into view as a stripe of detail-less
@@ -32,11 +32,11 @@
 struct RepairStep {
     enum class Kind {
         Ops,       // coefficient-domain: cdelta, copy, insert, delete, paste
-        AutoColour // pixel-domain, and so a re-encode -- see ImageDocument::render
+        AutoColor // pixel-domain, and so a re-encode -- see ImageDocument::render
     };
 
     Kind kind = Kind::Ops;
-    QVector<jr::Op> ops; // empty for AutoColour
+    QVector<jr::Op> ops; // empty for AutoColor
     QString description;
     bool enabled = true;
 };
@@ -101,7 +101,7 @@ public:
     // Decoded RGB of the rendered state, kept because the view needs it on
     // every repaint and re-decoding a large JPEG per paint is wasteful.
     const jr::Samples &rgb() const { return m_rgb; }
-    // Decoded on first use: only the colour-matching path needs it.
+    // Decoded on first use: only the color-matching path needs it.
     const jr::Samples &ycbcr() const;
 
     const QVector<RepairStep> &steps() const { return m_steps; }
@@ -110,7 +110,7 @@ public:
     // Every mutator renders the new recipe before committing it, so a step
     // that libjpeg refuses leaves the document exactly as it was.
     bool addOps(const QVector<jr::Op> &ops, const QString &description, QString *error);
-    bool addAutoColour(const QString &description, QString *error);
+    bool addAutoColor(const QString &description, QString *error);
     bool setStepEnabled(int index, bool enabled, QString *error);
     bool removeStep(int index, QString *error);
     // Moves the step at `from` so that it ends up at index `to`.
@@ -129,7 +129,7 @@ public:
 private:
     // Replays `steps` from the original. Coefficient steps are accumulated and
     // handed to one jr::apply, so a run of them costs a single decode/encode;
-    // an AutoColour step has to flush that run, because it works on pixels.
+    // an AutoColor step has to flush that run, because it works on pixels.
     std::optional<QByteArray> render(const QVector<RepairStep> &steps, QString *error) const;
     // Checks `data` over and, if it holds up, makes it the document. Nothing
     // is swapped in until every check has passed, so a file that will not

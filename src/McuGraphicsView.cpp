@@ -49,7 +49,7 @@ void McuGraphicsView::setContentRect(const QRectF &rect)
 // Grow the scene rect to the image plus a viewport of slack on each side, so
 // there is always scroll range to move into. Panning and cursor-anchored zoom
 // both work by scrolling, and a scene rect that hugs the image leaves them
-// nothing to do -- that is what pins the image to the centre of the view.
+// nothing to do -- that is what pins the image to the center of the view.
 void McuGraphicsView::updateSceneExtent()
 {
     if (!scene() || m_contentRect.isEmpty())
@@ -64,11 +64,11 @@ void McuGraphicsView::updateSceneExtent()
         return;
 
     // Scrollbar values are relative to the scene rect's origin, so moving that
-    // origin would shift what is on screen. Pin the current centre across the
+    // origin would shift what is on screen. Pin the current center across the
     // change.
-    const QPointF centre = mapToScene(viewport()->rect().center());
+    const QPointF center = mapToScene(viewport()->rect().center());
     scene()->setSceneRect(wanted);
-    centerOn(centre);
+    centerOn(center);
 }
 
 void McuGraphicsView::zoomToFit()

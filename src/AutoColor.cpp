@@ -27,7 +27,7 @@ int orderStatistic(const Histogram &cumulative, qint64 k)
 {
     k = std::clamp<qint64>(k, 0, cumulative[255] - 1);
     // Values are 0..255, so a linear walk is 256 steps at worst -- cheaper
-    // than a binary search once cache behaviour is accounted for.
+    // than a binary search once cache behavior is accounted for.
     for (int v = 0; v < 256; ++v) {
         if (cumulative[v] > k)
             return v;
@@ -59,7 +59,7 @@ double percentile(const Histogram &histogram, double q)
     return a + frac * (b - a);
 }
 
-// PhotoDemon's clarity curve: push each level away from mid-grey in
+// PhotoDemon's clarity curve: push each level away from mid-gray in
 // proportion to how far it already is, scaled down again by how close it is
 // to either end of the range, so 0 and 255 stay put.
 std::array<quint8, 256> clarityTable(double strength)

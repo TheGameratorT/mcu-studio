@@ -46,7 +46,7 @@ public:
     // One byte per MCU, row-major, non-zero where selected.
     QByteArray selectionMask() const;
     // The selection as pixel rectangles, one per MCU row it covers. Callers
-    // measuring colour over the selection want these rather than the mask.
+    // measuring color over the selection want these rather than the mask.
     QVector<QRect> selectionRects() const;
     void selectAll();
     void clearSelection();

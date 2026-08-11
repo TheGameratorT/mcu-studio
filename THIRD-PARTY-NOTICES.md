@@ -10,7 +10,7 @@ all of which is GPL-compatible.
 
 * Upstream: <https://github.com/openrightorg/jpegrepair>
 * Files: `third_party/jpegrepair/jpegrepair_core.c`, `jpegrepair_core.h`
-* Licence: BSD 3-Clause, full text in `third_party/jpegrepair/LICENSE.jpegrepair`
+* License: BSD 3-Clause, full text in `third_party/jpegrepair/LICENSE.jpegrepair`
 
 The repair transform in `jpegrepair_core.c` is derived from upstream's
 `jpegrepair.c`. **Changes made:**
@@ -62,7 +62,7 @@ Neither Don Mahurin nor the jpegrepair project endorses this tool.
 ## Independent JPEG Group — marker-copying helpers
 
 * Files: `third_party/jpegrepair/transupp.c`, `transupp.h` (unmodified)
-* Licence: the IJG licence, full text in `third_party/jpegrepair/README.ijg`
+* License: the IJG license, full text in `third_party/jpegrepair/README.ijg`
 
 > Copyright (C) 1997, Thomas G. Lane.
 > This file is part of the Independent JPEG Group's software.
@@ -75,7 +75,7 @@ and other application markers from the source image into the repaired one.
 ## libjpeg / libjpeg-turbo — linked, not bundled
 
 Provided by the system at build time and found via CMake's `FindJPEG`. Its
-licence (IJG, plus BSD-3-Clause and zlib terms for libjpeg-turbo) is the one
+license (IJG, plus BSD-3-Clause and zlib terms for libjpeg-turbo) is the one
 shipped by your distribution or vendor. Nothing from it is redistributed here.
 
 ---
@@ -89,6 +89,6 @@ redistributed here; see <https://www.qt.io/licensing> for its terms.
 
 ## PhotoDemon — algorithm reference
 
-The auto-colour correction in `src/AutoColor.cpp` reimplements the approach
+The auto-color correction in `src/AutoColor.cpp` reimplements the approach
 used by PhotoDemon's automatic white balance and clarity adjustments. No
 PhotoDemon code is included.

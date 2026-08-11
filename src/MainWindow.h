@@ -70,10 +70,10 @@ private slots:
     void onDeltasChanged();
     void onScopeChanged();
     void onPickReferenceFromImage();
-    void onMatchColours();
-    void onApplyColour();
+    void onMatchColors();
+    void onApplyColor();
     void onResetDeltas();
-    void onAutoColour();
+    void onAutoColor();
 
     void onInsertBlocks();
     void onDeleteBlocks();
@@ -98,14 +98,14 @@ private:
 
     enum class ScopeChoice { SelectedBlocks, SelectionToEnd, WholeImage };
 
-    // Where the reference colour was measured.
+    // Where the reference color was measured.
     //
     // A block of the image under repair is measured against the render on
     // screen, so it stops describing anything the moment a step is committed. A
     // patch of another copy of the picture is measured against a file this tool
     // never touches, so it outlives every edit -- and it is the only reference
     // there is once a donor header has left the picture wrong from its first
-    // block, with no good colour anywhere inside the file to point at.
+    // block, with no good color anywhere inside the file to point at.
     struct Reference {
         enum class Kind { Block, External };
 
@@ -114,7 +114,7 @@ private:
         QString path;           // Kind::External
         QRect rect;             // Kind::External, in that picture's pixels
         // Kind::External, and carried this far because it changes what a match
-        // means: a greyscale copy has no chroma to lend.
+        // means: a grayscale copy has no chroma to lend.
         bool monochrome = false;
 
         bool survivesEdit() const { return kind == Kind::External; }
@@ -125,7 +125,7 @@ private:
     QWidget *buildControlPanel();
     QGroupBox *buildImageGroup();
     QGroupBox *buildSelectionGroup();
-    QGroupBox *buildColourGroup();
+    QGroupBox *buildColorGroup();
     QGroupBox *buildBlockGroup();
     void buildActions();
 
@@ -177,8 +177,8 @@ private:
     // work out how much of the reference to compress.
     QByteArray currentScopeMask() const;
     int deltaFor(int component) const;
-    QVector<jr::Op> pendingColourOps() const;
-    bool hasPendingColourEdit() const;
+    QVector<jr::Op> pendingColorOps() const;
+    bool hasPendingColorEdit() const;
 
     void schedulePreview();
     void cancelPreview();
@@ -217,13 +217,13 @@ private:
 
     QLabel *m_infoLabel = nullptr;
     QLabel *m_selectionLabel = nullptr;
-    QLabel *m_selectionColourLabel = nullptr;
+    QLabel *m_selectionColorLabel = nullptr;
 
     QComboBox *m_scopeCombo = nullptr;
     QSlider *m_sliders[3] = {nullptr, nullptr, nullptr};
     QSpinBox *m_spins[3] = {nullptr, nullptr, nullptr};
     QLabel *m_shiftLabels[3] = {nullptr, nullptr, nullptr};
-    QPushButton *m_applyColourButton = nullptr;
+    QPushButton *m_applyColorButton = nullptr;
     QPushButton *m_resetDeltasButton = nullptr;
 
     QPushButton *m_pickReferenceButton = nullptr;

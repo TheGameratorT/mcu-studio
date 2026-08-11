@@ -34,7 +34,7 @@ Outside MSYS2, install NSIS so `makensis` is on `PATH`.
 ## Why the ldd sweep covers the plugins too
 
 `windeployqt` stages Qt's own DLLs and plugins, but not the third-party
-libraries those plugins link. `imageformats/qjpeg.dll` and its neighbours pull
+libraries those plugins link. `imageformats/qjpeg.dll` and its neighbors pull
 in libjpeg, libwebp and libtiff, which are reachable only through the plugin and
 never through `mcu-studio.exe` itself. If they are missing, the plugin fails to
 load silently — `QImage` still decodes PNG (built into Qt6Gui) but returns null

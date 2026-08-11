@@ -1,18 +1,18 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // Part of MCU Studio. See LICENSE and THIRD-PARTY-NOTICES.md.
 
-// Borrowing a colour reference from another copy of the same picture.
+// Borrowing a color reference from another copy of the same picture.
 //
-// Colour matching needs one block of known-good colour to measure the damage
+// Color matching needs one block of known-good color to measure the damage
 // against, and until now that block had to come from the image being repaired.
 // A donor header takes that away: the transplant splices the surviving entropy
 // data onto a header that never described it, so the DC predictors start out
-// wrong and the very first MCU can already be the wrong colour. There is then
+// wrong and the very first MCU can already be the wrong color. There is then
 // no good block anywhere in the file to point at.
 //
 // A surviving small copy answers it. Camera roll backups, an Exif thumbnail
 // pulled out elsewhere, a phone gallery cache, a messaging app's downscaled
-// copy -- any of them shows what the colours were, and colour is exactly what
+// copy -- any of them shows what the colors were, and color is exactly what
 // survives downscaling. The picture is measured, never spliced: nothing from
 // this file reaches the output, only three numbers.
 //
@@ -36,8 +36,8 @@ struct Loaded {
     jr::Samples ycbcr; // what the match arithmetic reads
     QImage preview;    // what the picker draws
     // The picture carries no chroma of its own, so matching against it would
-    // not correct the damaged file's colour but flatten it to neutral. Worth
-    // saying out loud, because a greyscale copy of a colour photograph looks
+    // not correct the damaged file's color but flatten it to neutral. Worth
+    // saying out loud, because a grayscale copy of a color photograph looks
     // like a perfectly good reference.
     bool monochrome = false;
 
@@ -63,9 +63,9 @@ std::optional<Loaded> load(const QString &path, QString *error = nullptr);
 // to less than a pixel, and a mean over no samples is no reference at all.
 QRect correspondingRect(QRect rect, QSize subjectSize, QSize referenceSize, int minEdge = 2);
 
-// `rect` moved so that it is centred on `centre` and lies inside `bounds`,
+// `rect` moved so that it is centerd on `center` and lies inside `bounds`,
 // keeping its size. Shared by the picker's click handling and by
 // correspondingRect().
-QRect centredIn(QRect rect, QPoint centre, QSize bounds);
+QRect centerdIn(QRect rect, QPoint center, QSize bounds);
 
 } // namespace refimage

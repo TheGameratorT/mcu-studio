@@ -611,7 +611,7 @@ int jr_quantize_patch(const uint8_t *ref, size_t ref_len,
   }
 
   /* jpeg_copy_critical_parameters brings across the quantization tables, the
-     sampling factors and the colour space in one go -- which is the whole
+     sampling factors and the color space in one go -- which is the whole
      point: the patch has to be quantized by the tables the destination
      already carries, or its blocks would mean something else once written
      there. Only the dimensions and the input format are ours. */
@@ -714,7 +714,7 @@ int jr_decode(const uint8_t *in, size_t in_len, int ycbcr,
   jpeg_read_header(&cinfo, TRUE);
 
   gray = (cinfo.num_components == 1);
-  /* JCS_YCbCr skips colour conversion entirely, so samples come back as the
+  /* JCS_YCbCr skips color conversion entirely, so samples come back as the
      JPEG stored them -- no clipping to the RGB gamut. */
   cinfo.out_color_space = gray ? JCS_GRAYSCALE : (ycbcr ? JCS_YCbCr : JCS_RGB);
 
@@ -744,7 +744,7 @@ int jr_decode(const uint8_t *in, size_t in_len, int ycbcr,
       uint8_t *dst = buffer + (size_t)y * (size_t)cinfo.output_width * 3;
       jpeg_read_scanlines(&cinfo, &row, 1);
       if (gray) {
-        /* Widen to 3 channels so every caller sees the same layout: a grey
+        /* Widen to 3 channels so every caller sees the same layout: a gray
            pixel is (Y, 128, 128) in YCbCr and (v, v, v) in RGB. */
         unsigned int x;
         for (x = 0; x < cinfo.output_width; x++) {

@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // Part of MCU Studio. See LICENSE and THIRD-PARTY-NOTICES.md.
 
-// Pointing at a patch of another copy of the picture and measuring its colour.
+// Pointing at a patch of another copy of the picture and measuring its color.
 //
 // Like the donor header dialog, this is built around looking rather than around
 // a wizard: the patch is dragged over the picture and the mean under it is
-// re-read as it moves, shown both as numbers and as the colour those numbers
+// re-read as it moves, shown both as numbers and as the color those numbers
 // stand for. What matters is that the patch ends up on the same *content* as
 // the target block, and only an eye can judge that -- the geometry cannot,
 // because a transplanted header leaves the stream shifted by an unknown amount.
@@ -42,7 +42,7 @@ public:
     void setImage(const QImage &image);
     QRect patch() const { return m_patch; }
     void setPatch(QRect patch); // in image pixels
-    // Shown centred while there is no picture to draw, so the panel says what
+    // Shown centerd while there is no picture to draw, so the panel says what
     // it is waiting for rather than sitting there empty.
     void setPlaceholder(const QString &text);
 
@@ -70,7 +70,7 @@ private:
     QString m_placeholder;
 };
 
-class ReferenceColourDialog : public QDialog
+class ReferenceColorDialog : public QDialog
 {
     Q_OBJECT
 
@@ -79,14 +79,14 @@ public:
     // the pixel rectangle of its picked target block, or a null rectangle when
     // no target has been picked -- together they place the patch where the
     // target block would fall in this copy.
-    ReferenceColourDialog(const QString &path, QSize subjectSize, QRect targetRect,
+    ReferenceColorDialog(const QString &path, QSize subjectSize, QRect targetRect,
                           const QString &targetName, QWidget *parent = nullptr);
 
     // Valid once the dialog has been accepted.
     QString referencePath() const { return m_path; }
     QRect patch() const { return m_view->patch(); }
     const colormath::BlockStats &stats() const { return m_stats; }
-    // Greyscale, so its Cb and Cr are a flat 128 and not a colour to match.
+    // Grayscale, so its Cb and Cr are a flat 128 and not a color to match.
     bool monochrome() const { return m_loaded.monochrome; }
 
 private slots:

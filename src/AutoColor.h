@@ -21,7 +21,7 @@ constexpr int kQuality = 95;
 // 0 and 255. 0.05 matches PhotoDemon's default.
 jr::Samples whiteBalance(const jr::Samples &rgb, double clipPercent = 0.05);
 
-// Midtone contrast, strongest around mid-grey and tapering to nothing at both
+// Midtone contrast, strongest around mid-gray and tapering to nothing at both
 // ends so highlights and shadows keep their detail.
 jr::Samples clarity(const jr::Samples &rgb, double strength = 0.4);
 

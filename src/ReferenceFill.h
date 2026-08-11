@@ -7,10 +7,10 @@
 // file: a shift, a copy from elsewhere in the same scan, a constant added to a
 // DC term. That works while the picture data survives somewhere. When it does
 // not -- an overwritten stretch, a hole a truncation left, blocks that decode
-// to nothing recognisable -- there is nothing inside the file to move.
+// to nothing recognizable -- there is nothing inside the file to move.
 //
-// A second copy of the photograph answers it, and unlike the colour reference
-// this one has to be a copy of the *content*, not just of the colours: a
+// A second copy of the photograph answers it, and unlike the color reference
+// this one has to be a copy of the *content*, not just of the colors: a
 // re-render, an export, a backup, a frame pulled out of a video, a PNG a
 // previous recovery attempt produced. Those pixels have never been through a
 // DCT, so they cannot be transplanted the way another JPEG's MCUs can. They
@@ -20,7 +20,7 @@
 // replaced. The patch is quantized with the damaged file's own tables and
 // sampling factors (see jr::quantizePatch), so the blocks handed over are the
 // ones the file would have held had it been shot with this content, and they
-// are written into the coefficient array beside their neighbours -- which are
+// are written into the coefficient array beside their neighbors -- which are
 // not read, not transformed, and not re-encoded. One generation, on the new
 // data only.
 #pragma once
@@ -41,7 +41,7 @@ namespace fill {
 // The reference laid over the image being repaired.
 //
 // Scaled to the damaged file's dimensions when it does not already match --
-// colour survives resampling, and so does enough detail to be worth having,
+// color survives resampling, and so does enough detail to be worth having,
 // but a copy at the original size is always the better one -- and then
 // extended into the padding that the last MCU row and column cover past the
 // picture's edge, which the encoder needs and the picture does not have.

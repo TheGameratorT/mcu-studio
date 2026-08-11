@@ -3,7 +3,7 @@
 
 #pragma once
 
-// Pick a widget style that honours the system light/dark colour scheme on every
+// Pick a widget style that honours the system light/dark color scheme on every
 // supported platform.
 //
 // Qt's colorScheme() already follows the OS appearance, but on Windows 10 the
@@ -36,7 +36,7 @@ inline void applyPlatformStyle()
 
 // Amber for "this may not be trustworthy". The shade that reads on a dark
 // background is far too pale on a light one, so pick per scheme -- each sits
-// around 6:1 against its own window colour. Re-ask after a palette change: the
+// around 6:1 against its own window color. Re-ask after a palette change: the
 // answer is a fixed hex chosen for the scheme that was in force.
 inline QString warningTextStyle()
 {
