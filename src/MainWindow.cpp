@@ -8,6 +8,7 @@
 #include <QCheckBox>
 #include <QCloseEvent>
 #include <QComboBox>
+#include <QDir>
 #include <QDockWidget>
 #include <QDragEnterEvent>
 #include <QDropEvent>
@@ -110,13 +111,18 @@ void MainWindow::buildActions()
                                      "from another shot on the same card."));
     connect(m_openDonorAction, &QAction::triggered, this, &MainWindow::onOpenWithDonor);
 
-    m_saveAction = new QAction(tr("&Save"), this);
-    m_saveAction->setShortcut(QKeySequence::Save);
-    connect(m_saveAction, &QAction::triggered, this, &MainWindow::onSave);
+    // There is no Save: the repair is written to its project file as it is
+    // made. What is left to ask for is the repaired picture itself, which is a
+    // product of the session rather than the session, and so is exported.
+    m_exportAction = new QAction(tr("&Export JPEG"), this);
+    m_exportAction->setShortcut(QKeySequence::Save);
+    m_exportAction->setToolTip(tr("Write the repaired picture out. Asks where the first time, "
+                                  "then goes on writing to the same file."));
+    connect(m_exportAction, &QAction::triggered, this, &MainWindow::onExport);
 
-    m_saveAsAction = new QAction(tr("Save &As…"), this);
-    m_saveAsAction->setShortcut(QKeySequence::SaveAs);
-    connect(m_saveAsAction, &QAction::triggered, this, &MainWindow::onSaveAs);
+    m_exportAsAction = new QAction(tr("Export JPEG &As…"), this);
+    m_exportAsAction->setShortcut(QKeySequence::SaveAs);
+    connect(m_exportAsAction, &QAction::triggered, this, &MainWindow::onExportAs);
 
     m_undoAction = new QAction(tr("&Undo"), this);
     m_undoAction->setShortcut(QKeySequence::Undo);
@@ -205,8 +211,8 @@ void MainWindow::buildUi()
     fileMenu->addAction(m_openAction);
     fileMenu->addAction(m_openDonorAction);
     fileMenu->addSeparator();
-    fileMenu->addAction(m_saveAction);
-    fileMenu->addAction(m_saveAsAction);
+    fileMenu->addAction(m_exportAction);
+    fileMenu->addAction(m_exportAsAction);
     fileMenu->addSeparator();
     QAction *quit = fileMenu->addAction(tr("&Quit"));
     quit->setShortcut(QKeySequence::Quit);
@@ -241,7 +247,7 @@ void MainWindow::buildUi()
     toolbar->setMovable(false);
     toolbar->setToolButtonStyle(Qt::ToolButtonTextOnly);
     toolbar->addAction(m_openAction);
-    toolbar->addAction(m_saveAsAction);
+    toolbar->addAction(m_exportAction);
     toolbar->addSeparator();
     toolbar->addAction(m_undoAction);
     toolbar->addAction(m_redoAction);
@@ -653,8 +659,10 @@ QGroupBox *MainWindow::buildBlockGroup()
 void MainWindow::onOpen()
 {
     const QString path = QFileDialog::getOpenFileName(
-        this, tr("Open JPEG"), m_doc.filePath(),
-        tr("JPEG images (*.jpg *.jpeg *.JPG *.JPEG);;All files (*)"));
+        this, tr("Open JPEG or repair project"), m_doc.filePath(),
+        tr("JPEGs and repair projects (*.jpg *.jpeg *.JPG *.JPEG *.mcup);;"
+           "JPEG images (*.jpg *.jpeg *.JPG *.JPEG);;"
+           "Repair projects (*.mcup);;All files (*)"));
     if (!path.isEmpty())
         openFile(path);
 }
@@ -670,6 +678,17 @@ void MainWindow::onOpenWithDonor()
 
 bool MainWindow::openFile(const QString &path)
 {
+    if (project::isProjectPath(path))
+        return openProject(path);
+
+    // An image with a session beside it opens as that session. This is the
+    // whole point of the project file: the user reopens the photograph they
+    // were working on, by its own name, and finds the repair where they left
+    // it rather than back at the beginning.
+    const QString projectPath = project::pathForSource(path);
+    if (QFileInfo::exists(projectPath) && openProject(projectPath))
+        return true;
+
     QString error;
     if (!m_doc.load(path, &error))
         return offerDonorHeader(path, error);
@@ -858,7 +877,8 @@ bool MainWindow::runDonorDialog(const QString &path, const QByteArray &broken)
         return false;
 
     QString error;
-    if (!m_doc.loadReconstructed(path, dialog.splicedBytes(), dialog.donorPath(), &error)) {
+    if (!m_doc.loadReconstructed(path, dialog.splicedBytes(), dialog.donorPath(),
+                                 dialog.spliceOffset(), &error)) {
         showError(tr("Could not open image"), error);
         return false;
     }
@@ -875,18 +895,20 @@ bool MainWindow::runDonorDialog(const QString &path, const QByteArray &broken)
             .arg(dialog.spliceOffset())
             .arg(dialog.carriedExif() ? tr(", keeping the damaged file's own Exif") : QString()));
     log(tr("The picture is very likely shifted: use Insert and Delete blocks to slide the "
-           "stream into place, and save to a new file when it looks right."));
+           "stream into place, and export when it looks right."));
     // A transplanted header does not mend the scan behind it, which may well be
     // cut short too.
     reportTrimmedScan(path);
     return true;
 }
 
-void MainWindow::finishOpen()
+void MainWindow::finishOpen(bool startProject)
 {
-    // Never point Save at whatever was open before, and never at the damaged
-    // original: the next save has to ask.
-    m_savedPath.clear();
+    // Never point Export at whatever was open before, and never at the damaged
+    // original: the first export of a session has to ask.
+    m_exportPath.clear();
+    m_projectPath = project::pathForSource(m_doc.filePath());
+    m_projectBroken = false;
     cancelPreview();
     m_showingPreview = false;
     // A reference from another image belonged to the file that was open, not to
@@ -897,33 +919,212 @@ void MainWindow::finishOpen()
 
     loadIntoView();
     onResetDeltas();
+
+    // A donor transplant or a salvaged scan is real work -- a donor found, a
+    // splice point swept for, a salvage mode settled on -- and none of it is on
+    // disk. Write it down now rather than waiting for a first repair step.
+    if (startProject && m_doc.isReconstruction())
+        saveProject();
 }
 
-void MainWindow::onSave()
+// ---------------------------------------------------------------------------
+// The project file
+// ---------------------------------------------------------------------------
+
+project::Project MainWindow::currentProject() const
+{
+    project::Project stored;
+    stored.sourcePath = m_doc.filePath();
+    stored.sourceBytes = QFileInfo(m_doc.filePath()).size();
+    stored.salvageMode = m_doc.salvageMode();
+    if (!m_doc.donorPath().isEmpty())
+        stored.donor = project::Donor{m_doc.donorPath(), m_doc.donorSpliceOffset()};
+    stored.exportPath = m_exportPath;
+    stored.steps = m_doc.steps();
+    return stored;
+}
+
+void MainWindow::saveProject()
+{
+    if (!m_doc.isOpen() || m_projectPath.isEmpty())
+        return;
+
+    // Worth saying once, when the file first appears: a tool that writes
+    // something next to the user's photographs should say that it does, and
+    // this is also where they find out that closing costs them nothing.
+    const bool isNew = !QFileInfo::exists(m_projectPath);
+
+    QString error;
+    if (project::write(m_projectPath, currentProject(), &error)) {
+        m_projectBroken = false;
+        if (isNew) {
+            log(tr("Keeping this session in %1. It reopens with the image, so the repair "
+                   "survives closing the program.")
+                    .arg(QFileInfo(m_projectPath).fileName()));
+        }
+        return;
+    }
+
+    // Say this once. The alternative is a dialog after every block inserted,
+    // which would train the user to click through the one message here that
+    // they cannot afford to miss.
+    if (!m_projectBroken) {
+        m_projectBroken = true;
+        showError(tr("Repairs are not being saved"),
+                  tr("%1\n\nThe repair itself is fine and the picture can still be exported, "
+                     "but this session is not being written down: if the program stops before "
+                     "you export, the steps are lost. This usually means the folder holding "
+                     "the image cannot be written to -- read-only rescue media, or a mounted "
+                     "disk image. Copying the image somewhere writable and reopening it there "
+                     "is the fix.")
+                      .arg(error));
+    }
+    log(error);
+}
+
+QString MainWindow::setAsideProject(const QString &projectPath)
+{
+    if (!QFileInfo::exists(projectPath))
+        return QString();
+
+    // Never two sessions deep: keep the one being displaced, but do not build a
+    // pile of .bak.bak.bak beside someone's photographs.
+    QString kept = projectPath + QStringLiteral(".bak");
+    for (int n = 2; QFileInfo::exists(kept) && n < 100; ++n)
+        kept = projectPath + QStringLiteral(".bak%1").arg(n);
+
+    return QFile::rename(projectPath, kept) ? kept : QString();
+}
+
+bool MainWindow::openProject(const QString &projectPath)
+{
+    QString error;
+    const auto stored = project::read(projectPath, &error);
+    if (!stored) {
+        // Unreadable or not, it is the only record of a session, and the next
+        // repair step would autosave straight over it.
+        const QString kept = setAsideProject(projectPath);
+        showError(tr("Could not open the repair project"),
+                  kept.isEmpty()
+                      ? error
+                      : tr("%1\n\nIt has been kept as %2, so nothing writes over it.")
+                            .arg(error, QFileInfo(kept).fileName()));
+        return false;
+    }
+
+    const QFileInfo sourceInfo(stored->sourcePath);
+    if (!sourceInfo.exists()) {
+        showError(tr("Could not open the repair project"),
+                  tr("%1 repairs %2, which is not there any more.\n\nThe project holds the "
+                     "repair steps, not the picture, so the image it was built from has to be "
+                     "in place. If it was moved, put the project beside it and open it again.")
+                      .arg(QFileInfo(projectPath).fileName(),
+                           QDir::toNativeSeparators(stored->sourcePath)));
+        return false;
+    }
+
+    if (stored->donor) {
+        // Rebuild the same transplant: the reconstruction was never on disk, and
+        // the steps were built against its exact bytes.
+        QByteArray broken;
+        if (!readFile(stored->sourcePath, &broken))
+            return false;
+        QByteArray donorBytes;
+        if (!readFile(stored->donor->path, &donorBytes))
+            return false;
+
+        const donor::Layout layout = donor::scan(donorBytes);
+        auto spliced = donor::splice(donorBytes, layout, broken, stored->donor->spliceOffset,
+                                     &error);
+        if (!spliced) {
+            showError(tr("Could not rebuild the donor header"),
+                      tr("%1 was opened with a header borrowed from %2, and that header can no "
+                         "longer be used: %3")
+                          .arg(sourceInfo.fileName(),
+                               QFileInfo(stored->donor->path).fileName(), error));
+            return false;
+        }
+        if (!m_doc.loadReconstructed(stored->sourcePath, spliced->bytes, stored->donor->path,
+                                     stored->donor->spliceOffset, &error)) {
+            showError(tr("Could not open image"), error);
+            return false;
+        }
+    } else if (!m_doc.load(stored->sourcePath, &error, stored->salvageMode)) {
+        showError(tr("Could not open image"), error);
+        return false;
+    }
+
+    finishOpen(false);
+    m_projectPath = projectPath;
+    m_exportPath = stored->exportPath;
+
+    log(tr("Resumed the repair of %1 from %2.")
+            .arg(sourceInfo.fileName(), QFileInfo(projectPath).fileName()));
+    if (stored->sourceBytes > 0 && stored->sourceBytes != sourceInfo.size()) {
+        log(tr("Careful: %1 is %2 byte(s) now and was %3 when the repair was made. The steps "
+               "were worked out against different bytes.")
+                .arg(sourceInfo.fileName())
+                .arg(sourceInfo.size())
+                .arg(stored->sourceBytes));
+    }
+
+    if (!stored->steps.isEmpty()) {
+        QApplication::setOverrideCursor(Qt::WaitCursor);
+        const bool replayed = m_doc.adoptSteps(stored->steps, &error);
+        QApplication::restoreOverrideCursor();
+
+        if (!replayed) {
+            // The steps replayed once, when they were made. That they will not
+            // now means the file underneath them is not the one they were built
+            // against, and there is nothing to be done about it here -- but the
+            // record of what was tried is worth keeping.
+            const QString kept = setAsideProject(projectPath);
+            showError(tr("Could not replay the repair"),
+                      tr("%1 opened, but the %n saved repair step(s) could not be applied to "
+                         "it: %2\n\nThe image is open as it stands on disk, with no repairs. "
+                         "The steps have been kept in %3.",
+                         nullptr, stored->steps.size())
+                          .arg(sourceInfo.fileName(), error,
+                               kept.isEmpty() ? QFileInfo(projectPath).fileName()
+                                              : QFileInfo(kept).fileName()));
+            return true;
+        }
+        refreshFromDocument();
+        log(tr("Replayed %n repair step(s).", nullptr, stored->steps.size()));
+    }
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// Export
+// ---------------------------------------------------------------------------
+
+void MainWindow::onExport()
 {
     if (!requireImage())
         return;
-    // Never write over the damaged original by default: it is the one thing
-    // that cannot be regenerated if a repair goes wrong.
-    if (m_savedPath.isEmpty()) {
-        onSaveAs();
+    // The damaged original is never the default target: it is the one thing
+    // that cannot be regenerated if a repair goes wrong. So the first export
+    // asks, and every one after it goes where that one went.
+    if (m_exportPath.isEmpty()) {
+        onExportAs();
         return;
     }
     QString error;
-    if (!m_doc.saveAs(m_savedPath, &error)) {
-        showError(tr("Could not save"), error);
+    if (!m_doc.exportTo(m_exportPath, &error)) {
+        showError(tr("Could not export"), error);
         return;
     }
-    log(tr("Saved %1.").arg(m_savedPath));
+    log(tr("Exported %1.").arg(m_exportPath));
     updateWindowTitle();
 }
 
-void MainWindow::onSaveAs()
+void MainWindow::onExportAs()
 {
     if (!requireImage())
         return;
 
-    QString suggestion = m_savedPath;
+    QString suggestion = m_exportPath;
     if (suggestion.isEmpty()) {
         const QFileInfo source(m_doc.filePath());
         suggestion = source.dir().filePath(source.completeBaseName() + QStringLiteral("_repaired.")
@@ -932,18 +1133,21 @@ void MainWindow::onSaveAs()
                                                   : source.suffix()));
     }
 
-    const QString path = QFileDialog::getSaveFileName(this, tr("Save repaired JPEG"), suggestion,
+    const QString path = QFileDialog::getSaveFileName(this, tr("Export repaired JPEG"), suggestion,
                                                       tr("JPEG images (*.jpg *.jpeg)"));
     if (path.isEmpty())
         return;
 
     QString error;
-    if (!m_doc.saveAs(path, &error)) {
-        showError(tr("Could not save"), error);
+    if (!m_doc.exportTo(path, &error)) {
+        showError(tr("Could not export"), error);
         return;
     }
-    m_savedPath = path;
-    log(tr("Saved %1.").arg(path));
+    m_exportPath = path;
+    log(tr("Exported %1.").arg(path));
+    // Where the export went is part of the session: reopening the project and
+    // pressing Export should go on writing to the same file.
+    saveProject();
     updateWindowTitle();
 }
 
@@ -961,15 +1165,21 @@ void MainWindow::changeEvent(QEvent *event)
         m_matchWarningLabel->setStyleSheet(warningTextStyle());
 }
 
+// Closing asks nothing in the ordinary case, and that is the point of the
+// project file: the repair is already on disk, and reopening the image comes
+// back to exactly this. The one thing worth stopping for is a session that was
+// never written down, because then closing really does throw the work away.
 void MainWindow::closeEvent(QCloseEvent *event)
 {
-    if (!m_doc.isOpen() || !m_doc.isModified()) {
+    if (!m_doc.isOpen() || !m_projectBroken || !m_doc.hasUnexportedChanges()) {
         event->accept();
         return;
     }
     const auto choice = QMessageBox::warning(
-        this, tr("Unsaved repairs"),
-        tr("%1 has repairs that have not been saved. Close anyway?").arg(m_doc.fileName()),
+        this, tr("Repairs were not saved"),
+        tr("The repairs to %1 could not be written to a project file, and have not been "
+           "exported either. Closing now loses them. Close anyway?")
+            .arg(m_doc.fileName()),
         QMessageBox::Discard | QMessageBox::Cancel, QMessageBox::Cancel);
     event->setAccepted(choice == QMessageBox::Discard);
 }
@@ -1779,6 +1989,11 @@ void MainWindow::refreshFromDocument()
     // would mean re-finding the same spot each time.
     clearPickedBlocks(true);
 
+    // Every path that changes the recipe ends up here, which makes this the one
+    // place the session has to be written down. It costs a couple of kilobytes
+    // of JSON against a render that has already happened.
+    saveProject();
+
     updateWindowTitle();
     refreshStepList();
     updateActionStates();
@@ -1794,9 +2009,12 @@ void MainWindow::updateWindowTitle()
         setWindowTitle(tr("MCU Studio"));
         return;
     }
+    // The asterisk no longer means unsaved -- nothing here is ever unsaved --
+    // but not yet exported: there are repairs the picture on disk does not have.
     setWindowTitle(tr("%1%2 - MCU Studio")
-                       .arg(m_doc.fileName(), m_doc.isModified() ? QStringLiteral("*")
-                                                                 : QString()));
+                       .arg(m_doc.fileName(), m_doc.hasUnexportedChanges()
+                                                  ? QStringLiteral("*")
+                                                  : QString()));
 }
 
 void MainWindow::updateActionStates()
@@ -1804,8 +2022,8 @@ void MainWindow::updateActionStates()
     const bool open = m_doc.isOpen();
     const bool selection = open && m_grid->hasSelection();
 
-    m_saveAction->setEnabled(open);
-    m_saveAsAction->setEnabled(open);
+    m_exportAction->setEnabled(open);
+    m_exportAsAction->setEnabled(open);
     m_undoAction->setEnabled(m_doc.canUndo());
     m_redoAction->setEnabled(m_doc.canRedo());
     m_resetAction->setEnabled(open && m_doc.stepCount() > 0);

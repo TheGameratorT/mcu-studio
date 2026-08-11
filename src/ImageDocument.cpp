@@ -46,7 +46,8 @@ bool ImageDocument::load(const QString &path, QString *error, jr::SalvageMode mo
 }
 
 bool ImageDocument::loadReconstructed(const QString &path, const QByteArray &bytes,
-                                      const QString &donorPath, QString *error)
+                                      const QString &donorPath, qsizetype spliceOffset,
+                                      QString *error)
 {
     // The dates come from the damaged file, not from the donor: this is still
     // the photograph that was taken on the day the damaged file says. They are
@@ -65,8 +66,10 @@ bool ImageDocument::loadReconstructed(const QString &path, const QByteArray &byt
     m_originalCreated = created;
     m_originalModified = modified;
     m_originalAccessed = accessed;
-    // Nothing about this reconstruction is on disk yet.
-    m_unsavedReconstruction = true;
+    // The bytes being repaired are not the ones on disk, and the only record of
+    // how they were arrived at is the donor and the splice point.
+    m_isReconstruction = true;
+    m_donorOffset = spliceOffset;
     return true;
 }
 
@@ -121,24 +124,27 @@ bool ImageDocument::adopt(const QString &path, const QByteArray &data, const QSt
     m_steps.clear();
     m_history = {QVector<RepairStep>{}};
     m_index = 0;
-    m_savedIndex = 0;
+    m_exportedIndex = -1;
 
     m_filePath = path;
     m_donorPath = donorPath;
-    // A trimmed scan is work that exists only in memory, the same as a donor
-    // reconstruction: the file on disk is still the one libjpeg refuses.
-    m_unsavedReconstruction = m_scanTrim.has_value();
+    m_donorOffset = 0;
+    m_salvageMode = mode;
+    // A trimmed scan is a reconstruction too, the same as a donor transplant:
+    // the file on disk is still the one libjpeg refuses, and reaching these
+    // bytes again means making the same salvage choice again.
+    m_isReconstruction = m_scanTrim.has_value();
     m_originalCreated = QDateTime();
     m_originalModified = QDateTime();
     m_originalAccessed = QDateTime();
     return true;
 }
 
-bool ImageDocument::saveAs(const QString &path, QString *error)
+bool ImageDocument::exportTo(const QString &path, QString *error)
 {
     if (!isOpen()) {
         if (error)
-            *error = tr("There is no image to save.");
+            *error = tr("There is no image to export.");
         return false;
     }
 
@@ -154,9 +160,11 @@ bool ImageDocument::saveAs(const QString &path, QString *error)
         return false;
     }
 
-    m_filePath = path;
-    m_savedIndex = m_index;
-    m_unsavedReconstruction = false; // the reconstruction exists on disk now
+    // The document goes on belonging to the file it was opened from, whatever
+    // the export was called. Retargeting it here -- which is what Save As used
+    // to do -- would point the session's project file at its own output and
+    // leave the damaged original with no record of the repair.
+    m_exportedIndex = m_index;
     applyOriginalTimestamps(path);
     return true;
 }
@@ -342,6 +350,27 @@ bool ImageDocument::clearSteps(QString *error)
     return commitSteps(QVector<RepairStep>{}, error);
 }
 
+bool ImageDocument::adoptSteps(const QVector<RepairStep> &steps, QString *error)
+{
+    if (!isOpen()) {
+        if (error)
+            *error = tr("There is no image to repair.");
+        return false;
+    }
+
+    auto rendered = render(steps, error);
+    if (!rendered)
+        return false;
+    if (!adoptRendered(*rendered, error))
+        return false;
+
+    m_steps = steps;
+    m_history = {steps};
+    m_index = 0;
+    m_exportedIndex = -1;
+    return true;
+}
+
 bool ImageDocument::undo()
 {
     if (!canUndo())
@@ -372,13 +401,15 @@ void ImageDocument::clear()
 {
     m_filePath.clear();
     m_donorPath.clear();
-    m_unsavedReconstruction = false;
+    m_donorOffset = 0;
+    m_isReconstruction = false;
+    m_salvageMode = jr::SalvageMode::Truncate;
     m_original.clear();
     m_scanTrim.reset();
     m_steps.clear();
     m_history.clear();
     m_index = -1;
-    m_savedIndex = -1;
+    m_exportedIndex = -1;
     m_originalCreated = QDateTime();
     m_originalModified = QDateTime();
     m_originalAccessed = QDateTime();

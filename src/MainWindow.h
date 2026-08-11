@@ -12,6 +12,7 @@
 #include "ImageDocument.h"
 #include "JpegRepair.h"
 #include "McuGridItem.h"
+#include "ProjectFile.h"
 
 class QAction;
 class QCheckBox;
@@ -36,6 +37,9 @@ public:
     explicit MainWindow(QWidget *parent = nullptr);
     ~MainWindow() override;
 
+    // Opens an image, or a project file to resume the session it holds. An
+    // image with a project beside it goes through the project, so that
+    // reopening a repair and resuming it are the same action.
     bool openFile(const QString &path);
     // Opens `path` by borrowing a header from another JPEG. Offered when
     // opening it the ordinary way fails, and available from the File menu for
@@ -51,8 +55,8 @@ protected:
 private slots:
     void onOpen();
     void onOpenWithDonor();
-    void onSave();
-    void onSaveAs();
+    void onExport();
+    void onExportAs();
     void onUndo();
     void onRedo();
     void onResetToOriginal();
@@ -136,8 +140,25 @@ private:
 
     void loadIntoView();
     // Shared tail of every way of opening a file: clears what belonged to the
-    // last one, then puts the new document on screen.
-    void finishOpen();
+    // last one, then puts the new document on screen. `startProject` writes the
+    // project file at once for a document that is a reconstruction, whose work
+    // exists nowhere else; a session being restored from a project passes false,
+    // because the file it would write is the one still being read.
+    void finishOpen(bool startProject = true);
+    // Resumes the session in `projectPath`: reopens the image the way the
+    // project says it was opened, then replays the recipe onto it.
+    bool openProject(const QString &projectPath);
+    // Writes the session out. Called after every change to the recipe, which is
+    // what makes this tool have no Save: the work is on disk before the user
+    // has had time to wonder whether it is. Failure is reported once per
+    // document rather than on every keystroke -- see m_projectBroken.
+    void saveProject();
+    // The current session, in the form the project file stores.
+    project::Project currentProject() const;
+    // Renames a project that could not be read or replayed out of the way, so
+    // that the session about to start does not autosave over the record of the
+    // one that could not be recovered. Returns where it was put.
+    QString setAsideProject(const QString &projectPath);
     // The dialog offered when a file will not open on its own. Returns true if
     // the user went on to open it with a donor header.
     bool offerDonorHeader(const QString &path, const QString &whyItFailed);
@@ -188,7 +209,13 @@ private:
     bool commit(const QVector<jr::Op> &ops, const QString &description);
 
     ImageDocument m_doc;
-    QString m_savedPath; // empty until the user has chosen where output goes
+    QString m_exportPath;  // empty until the user has chosen where output goes
+    QString m_projectPath; // where this session is being written down
+    // Set when writing the project failed. The folder holding a damaged file is
+    // not always one we can write to -- read-only rescue media, a mounted disk
+    // image -- and a tool that quietly stops saving in that case would be worse
+    // than one that never saved at all. Said once, and again at closing time.
+    bool m_projectBroken = false;
 
     QGraphicsScene *m_scene = nullptr;
     McuGraphicsView *m_view = nullptr;
@@ -197,8 +224,8 @@ private:
 
     QAction *m_openAction = nullptr;
     QAction *m_openDonorAction = nullptr;
-    QAction *m_saveAction = nullptr;
-    QAction *m_saveAsAction = nullptr;
+    QAction *m_exportAction = nullptr;
+    QAction *m_exportAsAction = nullptr;
     QAction *m_undoAction = nullptr;
     QAction *m_redoAction = nullptr;
     QAction *m_resetAction = nullptr;

@@ -89,7 +89,7 @@ live preview of the correction, and an editable list of the steps.
   that adds midtone contrast. This one is a pixel edit, so it re-encodes, and
   the tool says so before it runs.
 - **Metadata and dates survive the repair.** Exif, ICC, XMP and comment markers
-  are carried into the output, auto color included, and the saved file is
+  are carried into the output, auto color included, and the exported file is
   stamped with the original's modification and access times, so a rescued folder
   still sorts by when the photos were taken.
 - **The repair is a list, not a result.** Every correction lands as a step in a
@@ -97,6 +97,14 @@ live preview of the correction, and an editable list of the steps.
   replayed over it in a single pass. Untick one to see the picture without it,
   reorder them, drop one from the middle, and the rest still apply. Undo/redo
   works over the whole session, and clearing the list gives back the original.
+- **There is no Save.** Because the repair is a list, it is small enough to
+  write down as you work, and that is what happens: a `.mcup` project file
+  appears beside the image and is rewritten on every change. Reopen the
+  photograph and the session comes back where you left it — steps, ticks, order
+  and all — whether you closed the program or it closed on you. What you export
+  is the repaired JPEG, which is a product of the session rather than the
+  session itself, so it is asked for explicitly and never written over the
+  damaged original by default.
 
 <details>
 <summary>Replaying from the original is also what keeps insert and delete honest</summary>
@@ -109,11 +117,11 @@ zeroed. That happens on *every* write, not just a re-encode, because
 to pixels. On its own it costs nothing, since those blocks are outside the
 visible image and the decoder crops them away. Insert and delete are what make
 it matter: they shift the stream *through* those positions, so real picture data
-lands in the dummy column and is flattened by the save. Under a save-and-reapply
-model the next insert would then drag those flattened blocks back into view as a
-stripe of detail-less squares. Replaying from the original keeps the session to
-a single write, so the dummy column is only ever clobbered on the final save,
-with nothing left to shift it into view.
+lands in the dummy column and is flattened by the write. Under an
+edit-and-reapply model the next insert would then drag those flattened blocks
+back into view as a stripe of detail-less squares. Replaying from the original
+keeps the session to a single write, so the dummy column is only ever clobbered
+on the final export, with nothing left to shift it into view.
 
 </details>
 

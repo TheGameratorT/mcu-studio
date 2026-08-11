@@ -70,6 +70,8 @@ qt_add_executable(mcu-studio
     src/MainWindow.cpp
     src/MainWindow.h
     src/PlatformStyle.h
+    src/ProjectFile.cpp
+    src/ProjectFile.h
     src/ReferenceColorDialog.cpp
     src/ReferenceColorDialog.h
     src/ReferenceFill.cpp

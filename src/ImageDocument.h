@@ -76,10 +76,15 @@ public:
     // reconstruction that libjpeg will accept, while the document goes on
     // belonging to the damaged file -- its name, its dates, and never its
     // bytes as the thing to save over. `donorPath` is where the header came
-    // from, and is remembered so the window can say so.
+    // from and `spliceOffset` where the damaged file's own data was taken to
+    // resume; both are remembered so the window can say so and a project file
+    // can rebuild the same reconstruction.
     bool loadReconstructed(const QString &path, const QByteArray &bytes, const QString &donorPath,
-                           QString *error);
-    bool saveAs(const QString &path, QString *error);
+                           qsizetype spliceOffset, QString *error);
+    // Writes the rendered image out. This is the only thing the session ever
+    // asks a path for: the repair itself lives in a project file the window
+    // keeps written for it.
+    bool exportTo(const QString &path, QString *error);
 
     bool isOpen() const { return !m_original.isEmpty(); }
     QString filePath() const { return m_filePath; }
@@ -87,13 +92,27 @@ public:
     // Where a transplanted header came from, empty for a file that opened on
     // its own.
     QString donorPath() const { return m_donorPath; }
+    // Where the damaged file's own data was taken to resume behind that header.
+    qsizetype donorSpliceOffset() const { return m_donorOffset; }
+    // What was done to a scan that stopped being readable. Recorded whether or
+    // not there was damage, because reopening the file has to make the same
+    // choice to arrive at the same bytes.
+    jr::SalvageMode salvageMode() const { return m_salvageMode; }
     // Set when the scan had to be cut back to open the file, so the window can
     // say how much of the picture data was unreachable.
     const std::optional<ScanTrim> &scanTrim() const { return m_scanTrim; }
-    // A reconstruction counts as unsaved work from the moment it opens: none
-    // of it exists on disk, and closing without saving would throw away the
-    // donor and splice point the user found.
-    bool isModified() const { return m_unsavedReconstruction || m_index != m_savedIndex; }
+    // Whether the bytes being repaired are something this tool assembled --
+    // a donor transplant, or a scan cut back to what libjpeg would read --
+    // rather than the file as it sits on disk.
+    bool isReconstruction() const { return m_isReconstruction; }
+    // Whether there is repair work the exported JPEG does not have. The recipe
+    // itself is never at risk -- the project file holds it -- so this asks only
+    // about the picture: a reconstruction with no steps still counts, because
+    // nothing on disk holds that picture either.
+    bool hasUnexportedChanges() const
+    {
+        return (m_isReconstruction || !m_steps.isEmpty()) && m_index != m_exportedIndex;
+    }
 
     const jr::Info &info() const { return m_info; }
     // The rendered result of the enabled steps.
@@ -118,6 +137,11 @@ public:
     // Drops every step. Undoable, so an accidental click does not throw away
     // a long repair session.
     bool clearSteps(QString *error);
+    // Takes `steps` as the whole recipe, as when a project file is reopened.
+    // Unlike every other mutator this starts the history over rather than
+    // adding to it: the steps are where the session was left, and there is
+    // nothing behind them to undo back into.
+    bool adoptSteps(const QVector<RepairStep> &steps, QString *error);
 
     bool canUndo() const { return m_index > 0; }
     bool canRedo() const { return m_index + 1 < m_history.size(); }
@@ -144,14 +168,16 @@ private:
 
     QString m_filePath;
     QString m_donorPath;   // set when the header was borrowed from another file
-    bool m_unsavedReconstruction = false;
+    qsizetype m_donorOffset = 0;
+    bool m_isReconstruction = false;
+    jr::SalvageMode m_salvageMode = jr::SalvageMode::Truncate;
     QByteArray m_original; // the file as opened, never edited
     std::optional<ScanTrim> m_scanTrim;
 
     QVector<RepairStep> m_steps;              // == m_history[m_index]
     QVector<QVector<RepairStep>> m_history;   // [0] is the empty recipe
     int m_index = -1;
-    int m_savedIndex = -1;
+    int m_exportedIndex = -1; // the state the exported JPEG holds, -1 for none
 
     // Taken when the file is opened, because saving may well overwrite it.
     QDateTime m_originalCreated;

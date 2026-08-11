@@ -70,6 +70,18 @@ public:
     bool isEmpty() const;
     jr_scope toC() const;
 
+    // The parts a Scope was built from, so a project file can write one down
+    // and hand it back to the factory it came from. Which of them mean
+    // anything depends on kind(): a run reads row, col and width-as-count; a
+    // rect reads all four; a mask reads only its own bytes and dimensions.
+    int row() const { return m_row; }
+    int col() const { return m_col; }
+    int height() const { return m_h; }
+    int width() const { return m_w; }
+    const QByteArray &maskBytes() const { return m_mask; }
+    int maskRows() const { return m_maskRows; }
+    int maskCols() const { return m_maskCols; }
+
 private:
     jr_scope_kind m_kind = JR_SCOPE_RUN;
     int m_row = 0, m_col = 0, m_h = 0, m_w = 0;
