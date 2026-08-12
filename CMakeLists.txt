@@ -90,6 +90,15 @@ if(WIN32)
     target_sources(mcu-studio PRIVATE packaging/mcu-studio.rc)
 endif()
 
+# The window icon, embedded so it shows up even when the app runs uninstalled
+# and no .desktop/theme icon is on the system. The .ico is reused rather than
+# the .svg because Qt reads it with the qico plugin from qt6-base, whereas SVG
+# icons would pull in Qt6::Svg purely for this.
+qt_add_resources(mcu-studio "appicon"
+    PREFIX "/"
+    BASE packaging
+    FILES packaging/mcu-studio.ico)
+
 target_link_libraries(mcu-studio PRIVATE
     Qt6::Widgets
     Qt6::Concurrent
@@ -124,9 +133,10 @@ install(TARGETS mcu-studio
 install(FILES LICENSE THIRD-PARTY-NOTICES.md
     DESTINATION ${CMAKE_INSTALL_DOCDIR})
 
-# Desktop integration. The binary name matches the .desktop basename so
-# Wayland/X11 associate the window with the right icon without a
-# StartupWMClass override.
+# Desktop integration. The app calls setDesktopFileName("mcu-studio") at
+# startup, which is what makes Wayland/X11 associate the window with this
+# .desktop file (and so the theme icon below) without a StartupWMClass
+# override -- keep the basename here in sync with that call.
 install(FILES packaging/mcu-studio.desktop
     DESTINATION ${CMAKE_INSTALL_DATADIR}/applications)
 install(FILES packaging/mcu-studio.svg

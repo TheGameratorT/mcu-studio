@@ -3,6 +3,7 @@
 
 #include <QApplication>
 #include <QCommandLineParser>
+#include <QIcon>
 
 #include "MainWindow.h"
 #include "PlatformStyle.h"
@@ -17,6 +18,15 @@ int main(int argc, char *argv[])
     QCoreApplication::setApplicationName(QStringLiteral("MCU Studio"));
     QCoreApplication::setApplicationVersion(QStringLiteral(MCU_STUDIO_VERSION));
     QCoreApplication::setOrganizationName(QStringLiteral("TheGameratorT"));
+
+    // The icon is embedded (see qt_add_resources in CMakeLists) so it is there
+    // even when running uninstalled. The desktop file name is what ties the
+    // window to packaging/mcu-studio.desktop: it becomes the Wayland app_id and
+    // the X11 WM_CLASS, which is how the shell finds the installed theme icon.
+    // Without it Qt would derive them from the executable path, which only
+    // happens to match when the binary is named exactly like the .desktop file.
+    QGuiApplication::setWindowIcon(QIcon(QStringLiteral(":/mcu-studio.ico")));
+    QGuiApplication::setDesktopFileName(QStringLiteral("mcu-studio"));
 
     QCommandLineParser parser;
     parser.setApplicationDescription(
