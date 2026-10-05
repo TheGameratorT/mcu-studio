@@ -2418,8 +2418,7 @@ void MainWindow::loadIntoView()
     // changed the frame.
     m_unitCombo->setProperty("mcusX", m_doc.info().mcusX);
     m_unitCombo->setProperty("mcusY", m_doc.info().mcusY);
-    // The view pads this out into the scrollable scene rect so the image can
-    // be dragged freely rather than sitting locked in the middle.
+    // The view fits and centers the image, and limits panning to it.
     m_view->setContentRect(m_grid->boundingRect());
     m_view->zoomToFit();
     updateWindowTitle();
