@@ -6,7 +6,7 @@
 #  - regenerate .SRCINFO: makepkg --printsrcinfo > .SRCINFO
 pkgname=mcu-studio
 pkgver=1.1.0
-pkgrel=1
+pkgrel=2
 pkgdesc="Repair damaged JPEGs by editing their DCT coefficients directly, with an MCU-level editor"
 arch=('x86_64')
 _repo_url="https://github.com/TheGameratorT/mcu-studio"
