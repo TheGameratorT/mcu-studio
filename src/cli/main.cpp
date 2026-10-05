@@ -422,7 +422,8 @@ int cmdBench(const QStringList &args, int repeat)
     const double renderFull = best([&] { rgb = work->render(false); });
     const double renderRow = best([&] { work->renderRows(rgb, {info.mcusY / 2}, false); });
     QByteArray mask(info.mcuCount(), '\0');
-    for (int m = info.mcuCount() / 2; m < info.mcuCount() / 2 + 64; ++m)
+    // 64 MCUs from the middle, or as many as a small picture has.
+    for (int m = info.mcuCount() / 2; m < qMin(info.mcuCount(), info.mcuCount() / 2 + 64); ++m)
         mask[m] = 1;
     const double preview = best([&] {
         ImageDocument::preview(work, rgb, {jr::Op::cdelta(0, 3, jr::Scope::mask(mask, info.mcusY, info.mcusX))}, nullptr);
@@ -451,7 +452,7 @@ int cmdBench(const QStringList &args, int repeat)
     row("insert 3 MCUs mid-image", insert);
     row("decode whole picture (all threads)", renderFull);
     row("decode one MCU row", renderRow);
-    row("preview a DC edit on 64 MCUs (copy+edit+decode)", preview);
+    row("preview a DC edit on up to 64 MCUs (copy+edit+decode)", preview);
     row("write JPEG (entropy encode, export only)", write);
     row("libjpeg-turbo full decode, for reference", libjpegDecode);
     row("old pipeline: read+edit+write in one call", oneShot);
