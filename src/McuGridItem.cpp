@@ -40,6 +40,13 @@ void McuGridItem::setImage(const QPixmap &pixmap, const jr::Info &info)
     m_targetRow = m_targetCol = -1;
     m_hoverRow = m_hoverCol = -1;
     m_pickMode = PickMode::None;
+    m_overlay = QImage();
+    update();
+}
+
+void McuGridItem::setOverlay(const QImage &perMcu)
+{
+    m_overlay = perMcu;
     update();
 }
 
@@ -234,6 +241,15 @@ void McuGridItem::paint(QPainter *painter, const QStyleOptionGraphicsItem *optio
 
     if (!m_info.isValid())
         return;
+
+    if (!m_overlay.isNull()) {
+        painter->save();
+        painter->setRenderHint(QPainter::SmoothPixmapTransform, false);
+        painter->drawImage(QRectF(0, 0, qreal(m_overlay.width()) * m_info.mcuWidth,
+                                  qreal(m_overlay.height()) * m_info.mcuHeight),
+                           m_overlay);
+        painter->restore();
+    }
 
     const qreal scale = option->levelOfDetailFromTransform(painter->worldTransform());
 

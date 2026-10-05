@@ -19,6 +19,7 @@
 
 #include "DonorHeader.h"
 
+class QCheckBox;
 class QComboBox;
 class QDialogButtonBox;
 class QLabel;
@@ -41,6 +42,7 @@ public:
     qsizetype spliceOffset() const { return m_resultOffset; }
     bool carriedExif() const { return m_result.carriedExif; }
     qsizetype headerSize() const { return m_result.headerSize; }
+    donor::SpliceOptions spliceOptions() const;
 
 protected:
     // Judging a splice means looking closely, so the preview follows the
@@ -51,6 +53,8 @@ private slots:
     void onBrowseDonor();
     void onCandidateChosen(int index);
     void onOffsetEdited();
+    void onRankDonors();
+    void onDetectWidth();
     void rebuild();
 
 private:
@@ -85,6 +89,12 @@ private:
     QLabel *m_donorStatus = nullptr;
     QComboBox *m_candidateCombo = nullptr;
     QSpinBox *m_offsetSpin = nullptr;
+    QCheckBox *m_keepOwnCheck = nullptr;
+    QCheckBox *m_renumberCheck = nullptr;
+    QSpinBox *m_widthSpin = nullptr;
+    QSpinBox *m_heightSpin = nullptr;
+    QSpinBox *m_restartSpin = nullptr;
+    QLabel *m_djvuLabel = nullptr;
     QLabel *m_preview = nullptr;
     QLabel *m_status = nullptr;
     QDialogButtonBox *m_buttons = nullptr;

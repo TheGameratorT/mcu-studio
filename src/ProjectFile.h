@@ -28,6 +28,7 @@
 
 #include <optional>
 
+#include "DonorHeader.h"
 #include "ImageDocument.h"
 #include "JpegRepair.h"
 
@@ -49,6 +50,7 @@ bool isProjectPath(const QString &path);
 struct Donor {
     QString path;
     qsizetype spliceOffset = 0;
+    donor::SpliceOptions options;
 };
 
 struct Project {
@@ -57,17 +59,30 @@ struct Project {
     // the recipe was built against different bytes, which is worth saying out
     // loud before the replay fails for reasons nobody could guess at.
     qint64 sourceBytes = 0;
+    // SHA-256 of the source, which is what actually identifies it: STOP/Djvu
+    // leaves a folder of files whose sizes often match exactly. Empty in
+    // projects written before it was recorded.
+    QByteArray sourceSha256;
     jr::SalvageMode salvageMode = jr::SalvageMode::Truncate;
     std::optional<Donor> donor;
     // Where the last export went, so Export can go there again without asking.
     // Absolute, and empty until the session has exported once.
     QString exportPath;
     QVector<RepairStep> steps;
+    // The undo history that led to `steps`, so undo works across sessions.
+    // Empty in projects written before it was recorded.
+    QVector<QVector<RepairStep>> history;
+    int historyIndex = -1;
 };
 
 // Both are atomic: the project is rewritten on every edit, and a half-written
 // one after a crash would lose exactly what it exists to protect.
 bool write(const QString &projectPath, const Project &project, QString *error);
 std::optional<Project> read(const QString &projectPath, QString *error);
+
+// Opens the image `project` repairs the way it was opened when the project
+// was made (rebuilding a donor transplant if there was one), without the
+// recipe: adopt project.steps afterwards.
+bool openSource(const Project &project, ImageDocument &doc, QString *error);
 
 } // namespace project

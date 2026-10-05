@@ -4,8 +4,11 @@
 #include "JpegRepair.h"
 
 #include <QCoreApplication>
+#include <QtConcurrent>
 
+#include <cmath>
 #include <cstdlib>
+#include <cstring>
 
 namespace jr {
 namespace {
@@ -50,8 +53,14 @@ Info fromC(const jr_info &in)
     out.maxVSamp = in.max_v_samp;
     out.progressive = in.progressive != 0;
     out.blocksPerMcu = in.blocks_per_mcu;
-    for (int i = 0; i < JR_MAX_COMPONENTS; ++i)
+    out.restartInterval = in.restart_interval;
+    out.scanCount = in.scan_count;
+    out.colorSpace = in.color_space;
+    for (int i = 0; i < JR_MAX_COMPONENTS; ++i) {
         out.dcQuant[i] = in.dc_quant[i];
+        out.hSamp[i] = in.h_samp[i] > 0 ? in.h_samp[i] : 1;
+        out.vSamp[i] = in.v_samp[i] > 0 ? in.v_samp[i] : 1;
+    }
     return out;
 }
 
@@ -82,6 +91,49 @@ std::optional<Samples> decode(const QByteArray &jpeg, bool ycbcr, QString *error
 }
 
 } // namespace
+
+// ---------------------------------------------------------------------------
+// Info
+// ---------------------------------------------------------------------------
+
+QString Info::samplingName() const
+{
+    if (numComponents == 1)
+        return QStringLiteral("grayscale");
+    if (numComponents != 3)
+        return QStringLiteral("%1 components").arg(numComponents);
+    if (hSamp[1] != hSamp[2] || vSamp[1] != vSamp[2] || hSamp[1] != 1 || vSamp[1] != 1)
+        return QStringLiteral("%1x%2, %3x%4, %5x%6")
+            .arg(hSamp[0]).arg(vSamp[0]).arg(hSamp[1]).arg(vSamp[1]).arg(hSamp[2]).arg(vSamp[2]);
+    const int h = hSamp[0], v = vSamp[0];
+    if (h == 1 && v == 1)
+        return QStringLiteral("4:4:4");
+    if (h == 2 && v == 1)
+        return QStringLiteral("4:2:2");
+    if (h == 2 && v == 2)
+        return QStringLiteral("4:2:0");
+    if (h == 1 && v == 2)
+        return QStringLiteral("4:4:0");
+    if (h == 4 && v == 1)
+        return QStringLiteral("4:1:1");
+    return QStringLiteral("%1x%2").arg(h).arg(v);
+}
+
+QString Info::unitName(int unit) const
+{
+    static const char *const names[] = {"Y", "Cb", "Cr", "K"};
+    int base = 0;
+    for (int c = 0; c < numComponents && c < JR_MAX_COMPONENTS; ++c) {
+        const int n = hSamp[c] * vSamp[c];
+        if (unit < base + n) {
+            const QString name = QString::fromLatin1(numComponents == 3 || c < 1 ? names[c]
+                                                                                  : "C");
+            return n > 1 ? QStringLiteral("%1%2").arg(name).arg(unit - base + 1) : name;
+        }
+        base += n;
+    }
+    return QStringLiteral("?");
+}
 
 // ---------------------------------------------------------------------------
 // Scope
@@ -167,14 +219,24 @@ Op Op::copyBlocks(int dRow, int dCol, Scope scope)
     return Op{JR_OP_COPY, std::move(scope), dRow, dCol, {}};
 }
 
-Op Op::insertBlocks(int count, Scope scope)
+Op Op::insertMcus(int count, Scope scope)
 {
     return Op{JR_OP_INSERT, std::move(scope), count, 0, {}};
 }
 
-Op Op::deleteBlocks(int count, Scope scope)
+Op Op::deleteMcus(int count, Scope scope)
 {
     return Op{JR_OP_DELETE, std::move(scope), count, 0, {}};
+}
+
+Op Op::insertUnits(int count, int row, int col, int unit)
+{
+    return Op{JR_OP_UNIT_INSERT, Scope::runFrom(row, col), count, unit, {}};
+}
+
+Op Op::deleteUnits(int count, int row, int col, int unit)
+{
+    return Op{JR_OP_UNIT_DELETE, Scope::runFrom(row, col), count, unit, {}};
 }
 
 Op Op::paste(int row, int col, const Clipboard &clip)
@@ -200,8 +262,286 @@ bool Clipboard::isValid() const
 
 bool Clipboard::fits(const Info &info) const
 {
-    return isValid() && info.isValid() && blocksPerMcu == info.blocksPerMcu
-        && numComponents == info.numComponents;
+    if (!isValid() || !info.isValid() || blocksPerMcu != info.blocksPerMcu
+        || numComponents != info.numComponents)
+        return false;
+    for (int c = 0; c < numComponents && c < JR_MAX_COMPONENTS; ++c) {
+        if (hSamp[c] != info.hSamp[c] || vSamp[c] != info.vSamp[c])
+            return false;
+    }
+    return true;
+}
+
+bool Clipboard::sameQuantization(const QVector<quint16> &quantTables) const
+{
+    return quant.isEmpty() || quant == quantTables;
+}
+
+Clipboard Clipboard::requantized(const QVector<quint16> &quantTables) const
+{
+    Clipboard out = *this;
+    if (quant.isEmpty() || quantTables.size() < numComponents * 64 || quant.size() < numComponents * 64)
+        return out;
+    out.quant = quantTables;
+    qint16 *p = reinterpret_cast<qint16 *>(out.coefs.data());
+    for (int m = 0; m < mcuCount; ++m) {
+        for (int c = 0; c < numComponents; ++c) {
+            const int blocks = hSamp[c] * vSamp[c];
+            const quint16 *qs = quant.constData() + c * 64;
+            const quint16 *qd = quantTables.constData() + c * 64;
+            for (int b = 0; b < blocks; ++b, p += 64) {
+                for (int i = 0; i < 64; ++i) {
+                    if (p[i] == 0 || qd[i] == 0)
+                        continue;
+                    // Only the store's own int16 bounds: what a JPEG can hold
+                    // is applied on the way out (jr_coefs_refresh_dc).
+                    const long v = std::lround(double(p[i]) * qs[i] / qd[i]);
+                    p[i] = qint16(qBound(-32767L, v, 32767L));
+                }
+            }
+        }
+    }
+    return out;
+}
+
+// ---------------------------------------------------------------------------
+// Coefs
+// ---------------------------------------------------------------------------
+
+Coefs::~Coefs()
+{
+    jr_coefs_free(m_c);
+}
+
+std::shared_ptr<Coefs> Coefs::load(const QByteArray &jpeg, QString *error)
+{
+    if (jpeg.isEmpty()) {
+        if (error)
+            *error = QCoreApplication::translate("jr", "There is no image data to read.");
+        return nullptr;
+    }
+    ErrBuf err;
+    jr_coefs *c = nullptr;
+    if (jr_coefs_load(reinterpret_cast<const uint8_t *>(jpeg.constData()), size_t(jpeg.size()), &c,
+                      err.data(), err.size())
+        != 0) {
+        err.flushTo(error);
+        return nullptr;
+    }
+    std::shared_ptr<Coefs> out(new Coefs);
+    out->m_c = c;
+    return out;
+}
+
+std::shared_ptr<Coefs> Coefs::clone() const
+{
+    jr_coefs *c = jr_coefs_clone(m_c);
+    if (!c)
+        return nullptr;
+    std::shared_ptr<Coefs> out(new Coefs);
+    out->m_c = c;
+    return out;
+}
+
+namespace {
+
+QVector<jr_op> toC(const QVector<Op> &ops)
+{
+    // The C ops borrow each Scope's mask and each paste payload, so the Ops
+    // must outlive the call -- they do, since `ops` is the caller's.
+    QVector<jr_op> cOps;
+    cOps.reserve(ops.size());
+    for (const Op &op : ops) {
+        jr_op c;
+        c.type = op.type;
+        c.scope = op.scope.toC();
+        c.a = op.a;
+        c.b = op.b;
+        c.coefs = op.coefs.isEmpty() ? nullptr
+                                     : reinterpret_cast<const int16_t *>(op.coefs.constData());
+        c.coef_count = size_t(op.coefs.size()) / sizeof(qint16);
+        cOps.push_back(c);
+    }
+    return cOps;
+}
+
+} // namespace
+
+bool Coefs::apply(const QVector<Op> &ops, QString *error)
+{
+    if (ops.isEmpty())
+        return true;
+    const QVector<jr_op> cOps = toC(ops);
+    ErrBuf err;
+    if (jr_coefs_apply(m_c, cOps.constData(), size_t(cOps.size()), err.data(), err.size()) != 0) {
+        err.flushTo(error);
+        return false;
+    }
+    return true;
+}
+
+std::optional<QByteArray> Coefs::write(const QByteArray &headerSource, QString *error) const
+{
+    CBuffer out;
+    size_t outLen = 0;
+    ErrBuf err;
+    if (jr_coefs_write(m_c, reinterpret_cast<const uint8_t *>(headerSource.constData()),
+                       size_t(headerSource.size()), reinterpret_cast<uint8_t **>(&out.p), &outLen,
+                       err.data(), err.size())
+        != 0) {
+        err.flushTo(error);
+        return std::nullopt;
+    }
+    return QByteArray(static_cast<const char *>(out.p), qsizetype(outLen));
+}
+
+Info Coefs::info() const
+{
+    return fromC(m_c->info);
+}
+
+QVector<quint16> Coefs::quantTables() const
+{
+    QVector<quint16> out;
+    out.reserve(m_c->info.num_components * 64);
+    for (int c = 0; c < m_c->info.num_components; ++c)
+        for (int i = 0; i < 64; ++i)
+            out.append(m_c->quant[c][i]);
+    return out;
+}
+
+const qint16 *Coefs::mcu(int index) const
+{
+    return reinterpret_cast<const qint16 *>(m_c->data)
+        + qsizetype(index) * m_c->info.blocks_per_mcu * 64;
+}
+
+std::optional<Clipboard> Coefs::readMcus(int row, int col, int count, QString *error) const
+{
+    CBuffer coefs;
+    size_t n = 0;
+    ErrBuf err;
+    if (jr_coefs_read_mcus(m_c, row, col, count, reinterpret_cast<int16_t **>(&coefs.p), &n,
+                           err.data(), err.size())
+        != 0) {
+        err.flushTo(error);
+        return std::nullopt;
+    }
+    const Info inf = info();
+    Clipboard clip;
+    clip.blocksPerMcu = inf.blocksPerMcu;
+    clip.numComponents = inf.numComponents;
+    for (int c = 0; c < JR_MAX_COMPONENTS; ++c) {
+        clip.hSamp[c] = c < inf.numComponents ? inf.hSamp[c] : 0;
+        clip.vSamp[c] = c < inf.numComponents ? inf.vSamp[c] : 0;
+    }
+    clip.quant = quantTables();
+    clip.srcRow = row;
+    clip.srcCol = col;
+    clip.mcuCount = clip.blocksPerMcu > 0 ? int(n / (size_t(clip.blocksPerMcu) * 64)) : 0;
+    clip.coefs = QByteArray(static_cast<const char *>(coefs.p), qsizetype(n * sizeof(qint16)));
+    if (!clip.isValid()) {
+        if (error)
+            *error = QCoreApplication::translate("jr", "Could not read those MCUs.");
+        return std::nullopt;
+    }
+    return clip;
+}
+
+namespace {
+
+// Bands small enough to spread over every core, large enough that the
+// per-band chroma context (a block row above and below) stays cheap.
+constexpr int kBandMcuRows = 4;
+
+struct Band {
+    int row0, row1;
+};
+
+QVector<Band> bandsFor(const QVector<int> &rows)
+{
+    QVector<Band> out;
+    for (int r : rows) {
+        if (!out.isEmpty() && out.last().row1 == r && out.last().row1 - out.last().row0 < kBandMcuRows) {
+            out.last().row1 = r + 1;
+            continue;
+        }
+        out.append(Band{r, r + 1});
+    }
+    return out;
+}
+
+} // namespace
+
+Samples Coefs::render(bool ycbcr) const
+{
+    Samples out;
+    out.width = m_c->info.width;
+    out.height = m_c->info.height;
+    out.data = QByteArray(qsizetype(out.width) * out.height * 3, Qt::Uninitialized);
+    QVector<int> rows(m_c->info.mcus_y);
+    for (int r = 0; r < rows.size(); ++r)
+        rows[r] = r;
+    renderRows(out, rows, ycbcr);
+    return out;
+}
+
+void Coefs::renderRows(Samples &target, const QVector<int> &mcuRows, bool ycbcr) const
+{
+    if (target.width != m_c->info.width || target.height != m_c->info.height
+        || target.data.size() != qsizetype(target.width) * target.height * 3)
+        return;
+    QVector<int> rows = mcuRows;
+    std::sort(rows.begin(), rows.end());
+    rows.erase(std::unique(rows.begin(), rows.end()), rows.end());
+    const QVector<Band> bands = bandsFor(rows);
+    uint8_t *base = reinterpret_cast<uint8_t *>(target.data.data());
+    const size_t stride = size_t(target.width) * 3;
+    const jr_coefs *c = m_c;
+    if (bands.size() <= 1) {
+        for (const Band &b : bands)
+            jr_coefs_render_rows(c, b.row0, b.row1, ycbcr ? 1 : 0, base, stride);
+        return;
+    }
+    QtConcurrent::blockingMap(bands, [c, base, stride, ycbcr](const Band &b) {
+        jr_coefs_render_rows(c, b.row0, b.row1, ycbcr ? 1 : 0, base, stride);
+    });
+}
+
+QVector<int> Coefs::changedRows(const Coefs &other) const
+{
+    QVector<int> out;
+    const jr_coefs *a = m_c, *b = other.m_c;
+    if (a->info.mcus_x != b->info.mcus_x || a->info.mcus_y != b->info.mcus_y
+        || a->info.blocks_per_mcu != b->info.blocks_per_mcu
+        || std::memcmp(a->quant, b->quant, sizeof(a->quant)) != 0) {
+        for (int r = 0; r < a->info.mcus_y; ++r)
+            out.append(r);
+        return out;
+    }
+    const size_t rowBytes = size_t(a->info.mcus_x) * size_t(a->info.blocks_per_mcu) * 64 * sizeof(int16_t);
+    const char *pa = reinterpret_cast<const char *>(a->data);
+    const char *pb = reinterpret_cast<const char *>(b->data);
+    // The output DCs too: an edit up the image can move where a DC chain that
+    // ran out of range gets pulled back in, rows away from the edit itself.
+    const size_t dcRowBytes = size_t(a->info.mcus_x) * size_t(a->info.blocks_per_mcu) * sizeof(int16_t);
+    const char *da = reinterpret_cast<const char *>(a->out_dc);
+    const char *db = reinterpret_cast<const char *>(b->out_dc);
+    QVector<char> dirty(a->info.mcus_y, 0);
+    for (int r = 0; r < a->info.mcus_y; ++r) {
+        if (std::memcmp(pa + size_t(r) * rowBytes, pb + size_t(r) * rowBytes, rowBytes) != 0
+            || std::memcmp(da + size_t(r) * dcRowBytes, db + size_t(r) * dcRowBytes, dcRowBytes) != 0) {
+            for (int d = -1; d <= 1; ++d) {
+                if (r + d >= 0 && r + d < a->info.mcus_y)
+                    dirty[r + d] = 1;
+            }
+        }
+    }
+    for (int r = 0; r < dirty.size(); ++r) {
+        if (dirty[r])
+            out.append(r);
+    }
+    return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -314,8 +654,8 @@ Salvage salvageScan(const QByteArray &jpeg, SalvageMode mode)
         }
         if (marker == 0xD9) { // a clean end: nothing to salvage
             out.data = jpeg.left(m + 1);
-            out.droppedBytes = n - out.data.size();
-            out.damageAt = out.droppedBytes > 0 ? out.data.size() : -1;
+            if (out.data.size() < n)
+                out.trailerAt = out.data.size();
             return out;
         }
 
@@ -430,35 +770,10 @@ std::optional<Info> probe(const QByteArray &jpeg, QString *error)
 std::optional<Clipboard> readMcus(const QByteArray &jpeg, int row, int col, int count,
                                   QString *error)
 {
-    const std::optional<Info> info = probe(jpeg, error);
-    if (!info)
+    const auto coefs = Coefs::load(jpeg, error);
+    if (!coefs)
         return std::nullopt;
-
-    CBuffer coefs;
-    size_t n = 0;
-    ErrBuf err;
-    if (jr_read_mcus(reinterpret_cast<const uint8_t *>(jpeg.constData()), size_t(jpeg.size()), row,
-                     col, count, reinterpret_cast<int16_t **>(&coefs.p), &n, err.data(), err.size())
-        != 0) {
-        err.flushTo(error);
-        return std::nullopt;
-    }
-
-    Clipboard clip;
-    clip.blocksPerMcu = info->blocksPerMcu;
-    clip.numComponents = info->numComponents;
-    clip.srcRow = row;
-    clip.srcCol = col;
-    // The core clamps a run that reaches past the last MCU, so the count comes
-    // back from the payload rather than from what was asked for.
-    clip.mcuCount = clip.blocksPerMcu > 0 ? int(n / (size_t(clip.blocksPerMcu) * 64)) : 0;
-    clip.coefs = QByteArray(static_cast<const char *>(coefs.p), qsizetype(n * sizeof(qint16)));
-    if (!clip.isValid()) {
-        if (error)
-            *error = QCoreApplication::translate("jr", "Could not read those MCUs.");
-        return std::nullopt;
-    }
-    return clip;
+    return coefs->readMcus(row, col, count, error);
 }
 
 std::optional<Patch> quantizePatch(const QByteArray &destJpeg, const Samples &rgb, QString *error)
@@ -505,21 +820,7 @@ std::optional<QByteArray> apply(const QByteArray &jpeg, const QVector<Op> &ops, 
         return std::nullopt;
     }
 
-    // The C ops borrow each Scope's mask and each paste payload, so the Ops
-    // must outlive the call -- they do, since `ops` is the caller's.
-    QVector<jr_op> cOps;
-    cOps.reserve(ops.size());
-    for (const Op &op : ops) {
-        jr_op c;
-        c.type = op.type;
-        c.scope = op.scope.toC();
-        c.a = op.a;
-        c.b = op.b;
-        c.coefs = op.coefs.isEmpty() ? nullptr
-                                     : reinterpret_cast<const int16_t *>(op.coefs.constData());
-        c.coef_count = size_t(op.coefs.size()) / sizeof(qint16);
-        cOps.push_back(c);
-    }
+    const QVector<jr_op> cOps = toC(ops);
 
     CBuffer out;
     size_t outLen = 0;

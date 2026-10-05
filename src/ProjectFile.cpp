@@ -12,6 +12,8 @@
 #include <QJsonObject>
 #include <QSaveFile>
 
+#include <iterator>
+
 namespace project {
 namespace {
 
@@ -20,7 +22,7 @@ QString tr(const char *text)
     return QCoreApplication::translate("ProjectFile", text);
 }
 
-constexpr int kFormatVersion = 1;
+constexpr int kFormatVersion = 2;
 constexpr auto kMagic = "mcu-studio";
 
 // Paths go in relative to the project's own folder where they can -- the
@@ -137,6 +139,10 @@ QString opTypeName(jr_op_type type)
         return QStringLiteral("insert");
     case JR_OP_DELETE:
         return QStringLiteral("delete");
+    case JR_OP_UNIT_INSERT:
+        return QStringLiteral("unitInsert");
+    case JR_OP_UNIT_DELETE:
+        return QStringLiteral("unitDelete");
     case JR_OP_PASTE:
         break;
     }
@@ -155,6 +161,10 @@ std::optional<jr_op_type> opTypeFromName(const QString &name)
         return JR_OP_DELETE;
     if (name == QLatin1String("paste"))
         return JR_OP_PASTE;
+    if (name == QLatin1String("unitInsert"))
+        return JR_OP_UNIT_INSERT;
+    if (name == QLatin1String("unitDelete"))
+        return JR_OP_UNIT_DELETE;
     return std::nullopt;
 }
 
@@ -204,6 +214,53 @@ std::optional<jr::Op> opFromJson(const QJsonObject &json, QString *error)
     return op;
 }
 
+// --- byte edits -----------------------------------------------------------
+
+const char *const kEditKinds[] = {"deleteBytes", "insertBytes", "flipBit",
+                                  "deleteBits",  "insertBits",  "truncate"};
+
+QJsonObject editToJson(const ByteEdit &e)
+{
+    QJsonObject json;
+    json.insert(QStringLiteral("kind"), QLatin1String(kEditKinds[int(e.kind)]));
+    json.insert(QStringLiteral("offset"), e.offset);
+    if (e.bit)
+        json.insert(QStringLiteral("bit"), e.bit);
+    if (e.count)
+        json.insert(QStringLiteral("count"), e.count);
+    if (!e.data.isEmpty())
+        json.insert(QStringLiteral("data"), QString::fromLatin1(e.data.toBase64()));
+    return json;
+}
+
+std::optional<ByteEdit> editFromJson(const QJsonObject &json, QString *error)
+{
+    const QString kind = json.value(QStringLiteral("kind")).toString();
+    ByteEdit e;
+    bool found = false;
+    for (int i = 0; i < int(std::size(kEditKinds)); ++i) {
+        if (kind == QLatin1String(kEditKinds[i])) {
+            e.kind = ByteEdit::Kind(i);
+            found = true;
+        }
+    }
+    if (!found) {
+        if (error)
+            *error = tr("unknown byte edit \"%1\"").arg(kind);
+        return std::nullopt;
+    }
+    e.offset = json.value(QStringLiteral("offset")).toInteger();
+    e.bit = json.value(QStringLiteral("bit")).toInt();
+    e.count = json.value(QStringLiteral("count")).toInteger();
+    e.data = QByteArray::fromBase64(json.value(QStringLiteral("data")).toString().toLatin1());
+    if (e.offset < 0 || e.bit < 0 || e.bit > 7 || e.count < 0) {
+        if (error)
+            *error = tr("a byte edit points outside the file");
+        return std::nullopt;
+    }
+    return e;
+}
+
 // --- steps ----------------------------------------------------------------
 
 QJsonObject stepToJson(const RepairStep &step)
@@ -211,6 +268,7 @@ QJsonObject stepToJson(const RepairStep &step)
     QJsonObject json;
     json.insert(QStringLiteral("kind"),
                 step.kind == RepairStep::Kind::AutoColor ? QStringLiteral("autoColor")
+                : step.kind == RepairStep::Kind::Bytes   ? QStringLiteral("bytes")
                                                          : QStringLiteral("ops"));
     json.insert(QStringLiteral("enabled"), step.enabled);
     json.insert(QStringLiteral("description"), step.description);
@@ -219,6 +277,12 @@ QJsonObject stepToJson(const RepairStep &step)
         for (const jr::Op &op : step.ops)
             ops.append(opToJson(op));
         json.insert(QStringLiteral("ops"), ops);
+    }
+    if (step.kind == RepairStep::Kind::Bytes) {
+        QJsonArray edits;
+        for (const ByteEdit &e : step.edits)
+            edits.append(editToJson(e));
+        json.insert(QStringLiteral("edits"), edits);
     }
     return json;
 }
@@ -231,6 +295,8 @@ std::optional<RepairStep> stepFromJson(const QJsonObject &json, QString *error)
         step.kind = RepairStep::Kind::AutoColor;
     } else if (kind == QLatin1String("ops")) {
         step.kind = RepairStep::Kind::Ops;
+    } else if (kind == QLatin1String("bytes")) {
+        step.kind = RepairStep::Kind::Bytes;
     } else {
         if (error)
             *error = tr("unknown step kind \"%1\"").arg(kind);
@@ -254,7 +320,77 @@ std::optional<RepairStep> stepFromJson(const QJsonObject &json, QString *error)
             return std::nullopt;
         }
     }
+    if (step.kind == RepairStep::Kind::Bytes) {
+        const QJsonArray edits = json.value(QStringLiteral("edits")).toArray();
+        for (const QJsonValue &value : edits) {
+            auto e = editFromJson(value.toObject(), error);
+            if (!e)
+                return std::nullopt;
+            step.edits.append(*e);
+        }
+        if (step.edits.isEmpty()) {
+            if (error)
+                *error = tr("a byte-edit step has no edits");
+            return std::nullopt;
+        }
+    }
     return step;
+}
+
+// The undo history, stored as lists of indices into a pool of distinct steps:
+// consecutive states share almost all of their steps, and a paste step's
+// payload can be large.
+void historyToJson(QJsonObject &json, const QVector<QVector<RepairStep>> &history, int index)
+{
+    QVector<RepairStep> pool;
+    QJsonArray states;
+    for (const QVector<RepairStep> &state : history) {
+        QJsonArray refs;
+        for (const RepairStep &step : state) {
+            qsizetype at = pool.indexOf(step);
+            if (at < 0) {
+                pool.append(step);
+                at = pool.size() - 1;
+            }
+            refs.append(int(at));
+        }
+        states.append(refs);
+    }
+    QJsonArray poolJson;
+    for (const RepairStep &step : pool)
+        poolJson.append(stepToJson(step));
+    QJsonObject h;
+    h.insert(QStringLiteral("pool"), poolJson);
+    h.insert(QStringLiteral("states"), states);
+    h.insert(QStringLiteral("index"), index);
+    json.insert(QStringLiteral("history"), h);
+}
+
+void historyFromJson(const QJsonObject &json, Project &project)
+{
+    const QJsonObject h = json.value(QStringLiteral("history")).toObject();
+    if (h.isEmpty())
+        return;
+    QVector<RepairStep> pool;
+    for (const QJsonValue &v : h.value(QStringLiteral("pool")).toArray()) {
+        auto step = stepFromJson(v.toObject(), nullptr);
+        if (!step)
+            return; // history is a convenience: a damaged one is dropped, not fatal
+        pool.append(*step);
+    }
+    QVector<QVector<RepairStep>> history;
+    for (const QJsonValue &v : h.value(QStringLiteral("states")).toArray()) {
+        QVector<RepairStep> state;
+        for (const QJsonValue &ref : v.toArray()) {
+            const int i = ref.toInt(-1);
+            if (i < 0 || i >= pool.size())
+                return;
+            state.append(pool.at(i));
+        }
+        history.append(state);
+    }
+    project.history = history;
+    project.historyIndex = h.value(QStringLiteral("index")).toInt(-1);
 }
 
 } // namespace
@@ -284,6 +420,8 @@ bool write(const QString &projectPath, const Project &project, QString *error)
     json.insert(QStringLiteral("writtenBy"), QCoreApplication::applicationVersion());
     json.insert(QStringLiteral("source"), storePath(base, project.sourcePath));
     json.insert(QStringLiteral("sourceBytes"), project.sourceBytes);
+    if (!project.sourceSha256.isEmpty())
+        json.insert(QStringLiteral("sourceSha256"), QString::fromLatin1(project.sourceSha256.toHex()));
     json.insert(QStringLiteral("salvageMode"),
                 project.salvageMode == jr::SalvageMode::ReadThrough
                     ? QStringLiteral("readThrough")
@@ -292,6 +430,15 @@ bool write(const QString &projectPath, const Project &project, QString *error)
         QJsonObject donor;
         donor.insert(QStringLiteral("source"), storePath(base, project.donor->path));
         donor.insert(QStringLiteral("spliceOffset"), qint64(project.donor->spliceOffset));
+        const donor::SpliceOptions &o = project.donor->options;
+        donor.insert(QStringLiteral("keepOwnTables"), o.keepOwnTables);
+        donor.insert(QStringLiteral("renumberRestarts"), o.renumberRestarts);
+        if (o.width > 0)
+            donor.insert(QStringLiteral("width"), o.width);
+        if (o.height > 0)
+            donor.insert(QStringLiteral("height"), o.height);
+        if (o.restartInterval >= 0)
+            donor.insert(QStringLiteral("restartInterval"), o.restartInterval);
         json.insert(QStringLiteral("donor"), donor);
     }
     if (!project.exportPath.isEmpty())
@@ -301,6 +448,8 @@ bool write(const QString &projectPath, const Project &project, QString *error)
     for (const RepairStep &step : project.steps)
         steps.append(stepToJson(step));
     json.insert(QStringLiteral("steps"), steps);
+    if (project.history.size() > 1)
+        historyToJson(json, project.history, project.historyIndex);
 
     QSaveFile file(projectPath);
     if (!file.open(QIODevice::WriteOnly)) {
@@ -364,6 +513,8 @@ std::optional<Project> read(const QString &projectPath, QString *error)
         return std::nullopt;
     }
     result.sourceBytes = json.value(QStringLiteral("sourceBytes")).toInteger();
+    result.sourceSha256 =
+        QByteArray::fromHex(json.value(QStringLiteral("sourceSha256")).toString().toLatin1());
     result.salvageMode = json.value(QStringLiteral("salvageMode")).toString()
                     == QLatin1String("readThrough")
             ? jr::SalvageMode::ReadThrough
@@ -374,6 +525,15 @@ std::optional<Project> read(const QString &projectPath, QString *error)
         Donor parsed;
         parsed.path = resolvePath(base, donor.value(QStringLiteral("source")).toString());
         parsed.spliceOffset = donor.value(QStringLiteral("spliceOffset")).toInteger();
+        // Projects from before these options existed spliced the donor's
+        // header whole and left restart markers alone.
+        const bool legacy = !donor.contains(QStringLiteral("keepOwnTables"));
+        parsed.options.keepOwnTables = donor.value(QStringLiteral("keepOwnTables")).toBool(!legacy);
+        parsed.options.renumberRestarts =
+            donor.value(QStringLiteral("renumberRestarts")).toBool(!legacy);
+        parsed.options.width = donor.value(QStringLiteral("width")).toInt(0);
+        parsed.options.height = donor.value(QStringLiteral("height")).toInt(0);
+        parsed.options.restartInterval = donor.value(QStringLiteral("restartInterval")).toInt(-1);
         if (parsed.path.isEmpty()) {
             if (error)
                 *error = tr("%1 borrows a header but does not say from which file.")
@@ -399,7 +559,32 @@ std::optional<Project> read(const QString &projectPath, QString *error)
         }
         result.steps.append(*step);
     }
+    historyFromJson(json, result);
     return result;
+}
+
+bool openSource(const Project &project, ImageDocument &doc, QString *error)
+{
+    if (!project.donor)
+        return doc.load(project.sourcePath, error, project.salvageMode);
+    QFile broken(project.sourcePath), donorFile(project.donor->path);
+    if (!broken.open(QIODevice::ReadOnly)) {
+        if (error)
+            *error = tr("Could not read %1: %2").arg(project.sourcePath, broken.errorString());
+        return false;
+    }
+    if (!donorFile.open(QIODevice::ReadOnly)) {
+        if (error)
+            *error = tr("Could not read %1: %2").arg(project.donor->path, donorFile.errorString());
+        return false;
+    }
+    const QByteArray donorBytes = donorFile.readAll();
+    const auto spliced = donor::splice(donorBytes, donor::scan(donorBytes), broken.readAll(),
+                                       project.donor->spliceOffset, error, project.donor->options);
+    if (!spliced)
+        return false;
+    return doc.loadReconstructed(project.sourcePath, spliced->bytes, project.donor->path,
+                                 project.donor->spliceOffset, error);
 }
 
 } // namespace project

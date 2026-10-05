@@ -11,10 +11,22 @@ find_program(WINDEPLOYQT_EXECUTABLE
     HINTS "${QT_BIN_DIR}"
     REQUIRED)
 
+# The command-line tool ships beside the GUI: it needs a subset of the same Qt
+# DLLs, which windeployqt stages for the GUI anyway.
+if(MCU_STUDIO_BUILD_CLI)
+    set(MCU_STUDIO_DEPLOY_CLI
+        COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:mcu-studio-cli> "${DIST_DIR}/")
+    set(MCU_STUDIO_DEPLOY_DEPENDS mcu-studio mcu-studio-cli)
+else()
+    set(MCU_STUDIO_DEPLOY_CLI)
+    set(MCU_STUDIO_DEPLOY_DEPENDS mcu-studio)
+endif()
+
 add_custom_target(deploy ALL
-    DEPENDS mcu-studio
+    DEPENDS ${MCU_STUDIO_DEPLOY_DEPENDS}
     COMMAND ${CMAKE_COMMAND} -E make_directory "${DIST_DIR}"
     COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:mcu-studio> "${DIST_DIR}/"
+    ${MCU_STUDIO_DEPLOY_CLI}
     COMMAND "${WINDEPLOYQT_EXECUTABLE}"
         --no-translations --no-system-d3d-compiler --no-opengl-sw
         "${DIST_DIR}/mcu-studio.exe"

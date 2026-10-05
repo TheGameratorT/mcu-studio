@@ -28,7 +28,34 @@ include(GNUInstallDirs)
 find_package(Qt6 6.2 REQUIRED COMPONENTS Widgets Concurrent)
 find_package(JPEG REQUIRED)
 
+option(MCU_STUDIO_BUILD_TESTS "Build the unit tests" ON)
+option(MCU_STUDIO_BUILD_CLI "Build the mcu-studio-cli command-line tool" ON)
+option(MCU_STUDIO_FUZZ "Build libFuzzer harnesses (needs clang)" OFF)
+
+# The repair core reads coefficient arrays through libjpeg's virtual array
+# manager one row group at a time, which is correct for any libjpeg, but its
+# preview decoder is written to match libjpeg-turbo's output sample for
+# sample. IJG libjpeg works, with previews that can differ from the exported
+# file by a level on some samples.
+include(CheckSymbolExists)
+set(CMAKE_REQUIRED_INCLUDES ${JPEG_INCLUDE_DIRS})
+check_symbol_exists(LIBJPEG_TURBO_VERSION_NUMBER "stdio.h;jpeglib.h" MCU_STUDIO_HAVE_TURBO)
+unset(CMAKE_REQUIRED_INCLUDES)
+if(NOT MCU_STUDIO_HAVE_TURBO)
+    message(WARNING "libjpeg-turbo not found; previews may differ slightly from exported files.")
+endif()
+
 qt_standard_project_setup()
+
+# Fuzzing instruments everything, so it has to be set before any target.
+if(MCU_STUDIO_FUZZ)
+    if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        message(FATAL_ERROR "MCU_STUDIO_FUZZ needs clang (CC=clang CXX=clang++)")
+    endif()
+    add_compile_options(-fsanitize=fuzzer-no-link,address,undefined
+                        -fno-sanitize-recover=undefined -fno-omit-frame-pointer)
+    add_link_options(-fsanitize=address,undefined)
+endif()
 
 # ---------------------------------------------------------------------------
 # Vendored jpegrepair, built as a library rather than a command-line program.
@@ -37,6 +64,7 @@ qt_standard_project_setup()
 
 add_library(jpegrepair_core STATIC
     third_party/jpegrepair/jpegrepair_core.c
+    third_party/jpegrepair/jr_render.c
     third_party/jpegrepair/transupp.c)
 
 target_include_directories(jpegrepair_core PUBLIC third_party/jpegrepair)
@@ -53,33 +81,65 @@ endif()
 # Application
 # ---------------------------------------------------------------------------
 
-qt_add_executable(mcu-studio
-    src/main.cpp
+# Everything that is not a widget: the document model, file formats, analysis.
+# The GUI, the command-line tool and the tests all link it.
+add_library(mcu_core STATIC
     src/AutoColor.cpp
     src/AutoColor.h
+    src/Analysis.cpp
+    src/Analysis.h
+    src/Bitstream.cpp
+    src/Bitstream.h
     src/ColorMath.cpp
     src/ColorMath.h
     src/DonorHeader.cpp
     src/DonorHeader.h
-    src/DonorHeaderDialog.cpp
-    src/DonorHeaderDialog.h
+    src/DonorSearch.cpp
+    src/DonorSearch.h
+    src/DctEdge.h
+    src/Exif.cpp
+    src/Exif.h
     src/ImageDocument.cpp
     src/ImageDocument.h
     src/JpegRepair.cpp
     src/JpegRepair.h
+    src/JpegStructure.cpp
+    src/JpegStructure.h
+    src/ProjectFile.cpp
+    src/ProjectFile.h
+    src/ReferenceFill.cpp
+    src/ReferenceFill.h
+    src/ReferenceImage.cpp
+    src/ReferenceImage.h
+    src/Report.cpp
+    src/Report.h)
+target_include_directories(mcu_core PUBLIC src)
+target_link_libraries(mcu_core PUBLIC Qt6::Gui Qt6::Concurrent jpegrepair_core)
+target_compile_definitions(mcu_core PUBLIC MCU_STUDIO_VERSION="${PROJECT_VERSION}")
+set_target_properties(mcu_core PROPERTIES AUTOMOC OFF)
+if(MSVC)
+    target_compile_options(mcu_core PRIVATE /W3)
+else()
+    target_compile_options(mcu_core PRIVATE -Wall -Wextra)
+endif()
+
+qt_add_executable(mcu-studio
+    src/main.cpp
+    src/AnalysisDock.cpp
+    src/AnalysisDock.h
+    src/BatchDialog.cpp
+    src/BatchDialog.h
+    src/DonorHeaderDialog.cpp
+    src/DonorHeaderDialog.h
+    src/EmbeddedImagesDialog.cpp
+    src/EmbeddedImagesDialog.h
     src/MainWindow.cpp
     src/MainWindow.h
     src/PlatformStyle.h
-    src/ProjectFile.cpp
-    src/ProjectFile.h
     src/ReferenceColorDialog.cpp
     src/ReferenceColorDialog.h
-    src/ReferenceFill.cpp
-    src/ReferenceFill.h
     src/ReferenceFillDialog.cpp
     src/ReferenceFillDialog.h
-    src/ReferenceImage.cpp
-    src/ReferenceImage.h
     src/McuGridItem.cpp
     src/McuGridItem.h
     src/McuGraphicsView.cpp
@@ -102,12 +162,25 @@ qt_add_resources(mcu-studio "appicon"
 target_link_libraries(mcu-studio PRIVATE
     Qt6::Widgets
     Qt6::Concurrent
-    jpegrepair_core)
+    mcu_core)
+# The version (MCU_STUDIO_VERSION) comes from mcu_core: --version, the About
+# box and the installer all read it, and CI checks the release tag against it.
 
-# Single source of truth for the version: --version, the About box and the
-# installer all read this, and CI checks the release tag against it.
-target_compile_definitions(mcu-studio PRIVATE
-    MCU_STUDIO_VERSION="${PROJECT_VERSION}")
+if(MCU_STUDIO_BUILD_CLI)
+    qt_add_executable(mcu-studio-cli src/cli/main.cpp)
+    target_link_libraries(mcu-studio-cli PRIVATE mcu_core)
+    set_target_properties(mcu-studio-cli PROPERTIES WIN32_EXECUTABLE OFF MACOSX_BUNDLE OFF)
+    install(TARGETS mcu-studio-cli RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+endif()
+
+if(MCU_STUDIO_BUILD_TESTS)
+    enable_testing()
+    add_subdirectory(tests)
+endif()
+
+if(MCU_STUDIO_FUZZ)
+    add_subdirectory(fuzz)
+endif()
 
 if(MSVC)
     target_compile_options(mcu-studio PRIVATE /W3)
