@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(mcu-studio
-    VERSION 1.0.0
+    VERSION 1.1.0
     DESCRIPTION "Coefficient-domain JPEG repair with an MCU-level editor"
     LANGUAGES C CXX)
 

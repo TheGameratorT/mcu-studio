@@ -94,6 +94,7 @@ private slots:
     void onEmbeddedImages();
     void onBatchTriage();
     void onCarve();
+    void onAbout();
     void onWriteReport();
     void onByteEdits(const QVector<ByteEdit> &edits, const QString &description);
     void onBaseMcuRequested(int baseIndex);

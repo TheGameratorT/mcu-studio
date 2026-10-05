@@ -371,6 +371,13 @@ void MainWindow::buildUi()
                          "file (whose full-size preview is a JPEG), a backup archive."));
     connect(carve, &QAction::triggered, this, &MainWindow::onCarve);
 
+    QMenu *helpMenu = menuBar()->addMenu(tr("&Help"));
+    QAction *about = helpMenu->addAction(tr("&About MCU Studio"));
+    connect(about, &QAction::triggered, this, &MainWindow::onAbout);
+    // LGPL notice for the linked Qt libraries.
+    QAction *aboutQt = helpMenu->addAction(tr("About &Qt"));
+    connect(aboutQt, &QAction::triggered, qApp, &QApplication::aboutQt);
+
     // --- toolbar -----------------------------------------------------------
     QToolBar *toolbar = addToolBar(tr("Main"));
     toolbar->setMovable(false);
@@ -3000,6 +3007,21 @@ void MainWindow::onBatchTriage()
     dialog->setAttribute(Qt::WA_DeleteOnClose);
     connect(dialog, &BatchDialog::openRequested, this, [this](const QString &path) { openFile(path); });
     dialog->show();
+}
+
+void MainWindow::onAbout()
+{
+    QMessageBox::about(
+        this, tr("About MCU Studio"),
+        tr("<h3>MCU Studio %1</h3>"
+           "<p>Repairs damaged JPEG files by editing their DCT coefficients directly, "
+           "with an MCU-level editor.</p>"
+           "<p>Licensed under the GNU General Public License v3.0. The repair transform "
+           "is derived from <b>jpegrepair</b> (BSD 3-Clause); see "
+           "THIRD-PARTY-NOTICES.md for details.</p>"
+           "<p><a href=\"https://github.com/TheGameratorT/mcu-studio\">"
+           "github.com/TheGameratorT/mcu-studio</a></p>")
+            .arg(QApplication::applicationVersion()));
 }
 
 void MainWindow::onCarve()
