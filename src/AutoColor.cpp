@@ -59,10 +59,10 @@ double percentile(const Histogram &histogram, double q)
     return a + frac * (b - a);
 }
 
-// PhotoDemon's clarity curve: push each level away from mid-gray in
+// PhotoDemon's midtone curve: push each level away from mid-gray in
 // proportion to how far it already is, scaled down again by how close it is
 // to either end of the range, so 0 and 255 stay put.
-std::array<quint8, 256> clarityTable(double strength)
+std::array<quint8, 256> midtoneTable(double strength)
 {
     std::array<quint8, 256> lut{};
     for (int x = 0; x < 256; ++x) {
@@ -77,7 +77,7 @@ std::array<quint8, 256> clarityTable(double strength)
 
 } // namespace
 
-jr::Samples whiteBalance(const jr::Samples &rgb, double clipPercent)
+jr::Samples autoLevels(const jr::Samples &rgb, double clipPercent)
 {
     if (!rgb.isValid())
         return rgb;
@@ -98,7 +98,7 @@ jr::Samples whiteBalance(const jr::Samples &rgb, double clipPercent)
         std::array<quint8, 256> lut{};
         const double scale = 255.0 / (hi - lo);
         for (int v = 0; v < 256; ++v)
-            lut[v] = quint8(std::clamp((double(v) - lo) * scale, 0.0, 255.0));
+            lut[v] = quint8(std::lround(std::clamp((double(v) - lo) * scale, 0.0, 255.0)));
 
         for (qsizetype i = 0; i < n; ++i)
             p[i * 3 + c] = lut[p[i * 3 + c]];
@@ -106,13 +106,13 @@ jr::Samples whiteBalance(const jr::Samples &rgb, double clipPercent)
     return out;
 }
 
-jr::Samples clarity(const jr::Samples &rgb, double strength)
+jr::Samples midtoneContrast(const jr::Samples &rgb, double strength)
 {
     if (!rgb.isValid())
         return rgb;
 
     jr::Samples out = rgb;
-    const std::array<quint8, 256> lut = clarityTable(strength);
+    const std::array<quint8, 256> lut = midtoneTable(strength);
     quint8 *p = reinterpret_cast<quint8 *>(out.data.data());
     const qsizetype n = qsizetype(out.width) * out.height * 3;
     for (qsizetype i = 0; i < n; ++i)
@@ -122,7 +122,7 @@ jr::Samples clarity(const jr::Samples &rgb, double strength)
 
 jr::Samples autoCorrect(const jr::Samples &rgb)
 {
-    return clarity(whiteBalance(rgb));
+    return midtoneContrast(autoLevels(rgb));
 }
 
 } // namespace autocolor

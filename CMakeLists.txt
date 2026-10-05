@@ -47,6 +47,16 @@ endif()
 
 qt_standard_project_setup()
 
+# Fuzzing instruments everything, so it has to be set before any target.
+if(MCU_STUDIO_FUZZ)
+    if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        message(FATAL_ERROR "MCU_STUDIO_FUZZ needs clang (CC=clang CXX=clang++)")
+    endif()
+    add_compile_options(-fsanitize=fuzzer-no-link,address,undefined
+                        -fno-sanitize-recover=undefined -fno-omit-frame-pointer)
+    add_link_options(-fsanitize=address,undefined)
+endif()
+
 # ---------------------------------------------------------------------------
 # Vendored jpegrepair, built as a library rather than a command-line program.
 # Sources and licenses live in third_party/jpegrepair; see THIRD-PARTY-NOTICES.md.

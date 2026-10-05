@@ -15,17 +15,27 @@ all of which is GPL-compatible.
 The repair transform in `jpegrepair_core.c` is derived from upstream's
 `jpegrepair.c`. **Changes made:**
 
-* The command-line program was replaced by a stateless memory-in/memory-out
-  library API (`jr_probe`, `jr_apply`, `jr_decode`, `jr_encode_rgb`), so a whole
-  list of operations is applied to a single coefficient read instead of one
-  process launch and one file round-trip per operation.
+* The command-line program was replaced by a library API (`jr_probe`,
+  `jr_apply`, `jr_decode`, `jr_encode_rgb`, and the in-memory `jr_coefs_*`
+  family), so a whole list of operations is applied to coefficients held in
+  memory instead of one process launch and one file round-trip per operation.
+* Coefficients are held MCU-major between edits; the operations work on whole
+  MCUs, and on single 8x8 blocks in coding order (`JR_OP_UNIT_INSERT`,
+  `JR_OP_UNIT_DELETE`, not in upstream). libjpeg's virtual arrays are read and
+  written one row group at a time, as the memory manager expects.
+* Insert and delete shift whole MCUs in scan order. Upstream wrapped each
+  component's block rows at `width_in_blocks`, which slid luma against chroma
+  when the image was not a whole number of MCUs wide.
 * Block selection moved behind a `jr_scope` type, which adds a rectangle scope
   and an arbitrary MCU-mask scope alongside upstream's scan-order run.
 * The virtual-array accessor is now passed the decompress object itself.
   Upstream passed `&srcinfo` where `srcinfo` was already a pointer, handing
   libjpeg a `j_common_ptr` aimed at a pointer variable.
 * The `cdelta` case writes the DC coefficient directly rather than scanning all
-  64 coefficients to touch one.
+  64 coefficients to touch one, and clamps it to what the Huffman coder can
+  write. Coefficients a damaged stream decoded out of range are clamped once on
+  load (`jr_coefs_sanitize`).
+* `jr_read_mcus`, `JR_OP_PASTE`, `jr_quantize_patch` and `jr_trace` were added.
 * Failures return an error to the caller instead of calling `exit()`.
 
 > Copyright (c) 2017, Don Mahurin
@@ -56,6 +66,21 @@ The repair transform in `jpegrepair_core.c` is derived from upstream's
 > OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 Neither Don Mahurin nor the jpegrepair project endorses this tool.
+
+---
+
+## Independent JPEG Group — preview decoder
+
+* File: `third_party/jpegrepair/jr_render.c`
+* License: the IJG license, full text in `third_party/jpegrepair/README.ijg`
+
+`jr_render.c` reimplements, against coefficients held in memory, the accurate
+integer IDCT (`jidctint.c`), the triangle-filter chroma upsamplers
+(`jdsample.c`), the main buffer controller's edge handling (`jdmainct.c`), the
+sample range-limit table (`jdmaster.c`) and the JFIF YCbCr-to-RGB tables
+(`jdcolor.c`), so that previews match libjpeg-turbo's output sample for sample.
+
+> This software is based in part on the work of the Independent JPEG Group.
 
 ---
 

@@ -4,6 +4,7 @@
 #include "Bitstream.h"
 
 #include <QCoreApplication>
+#include <QHash>
 #include <QStringList>
 
 #include <algorithm>
@@ -365,10 +366,10 @@ struct Reader {
     }
     int bits(int n)
     {
-        int v = 0;
+        unsigned v = 0;
         for (int i = 0; i < n; ++i)
-            v = (v << 1) | bit();
-        return v;
+            v = (v << 1) | unsigned(bit());
+        return int(v & 0xFFFFu); // callers never ask for more than 16
     }
     int decode(const Huff &h)
     {
@@ -405,11 +406,12 @@ quint8 decodeMcu(const Setup &s, Reader &r, int *pred, int *dcFirst = nullptr, q
             if (out)
                 std::fill(out, out + 64, qint16(0));
             const int t = r.decode(s.dc[c.dc]);
-            if (t < 0)
+            if (t < 0 || t > 16) // no DC difference category goes past 16
                 return flags | BadCode;
             if (t > 11)
                 flags |= ValueRange;
-            pred[ci] += extend(r.bits(t), qMin(t, 16));
+            // Clamped so that a run of garbage cannot overflow the predictor.
+            pred[ci] = qBound(-(1 << 20), pred[ci] + extend(r.bits(t), t), 1 << 20);
             if (b == 0 && dcFirst)
                 dcFirst[ci] = pred[ci];
             if (out)
@@ -741,7 +743,7 @@ namespace {
 int resyncScore(const Candidate &c)
 {
     constexpr double kDcWeight = 4.0;
-    return qRound((kDcWeight * c.dcStep + c.edgeCost) * 10);
+    return int(std::min((kDcWeight * c.dcStep + c.edgeCost) * 10, 1e9));
 }
 
 void blockEdge(const qint16 *coef, const int *q, int which, double out[8])
@@ -873,6 +875,11 @@ QVector<Candidate> searchResync(const QByteArray &jpeg, qint64 bitPos, int maxBi
         QVector<double> steps[4];
         QVector<int> bits;
         QVector<qint16> first(64 * lumaBlocks), second(64 * lumaBlocks);
+        // The picture ends where it ends: decoding cleanly up to its last MCU
+        // is as good as filling the window.
+        const int remaining = st.mcusX * st.mcusY - qMax(0, m0);
+        const bool toTheEnd = remaining <= limit;
+        limit = qMin(limit, remaining);
         for (int m = 0; m < limit; ++m) {
             const qint64 at = r.pos;
             int dc[4] = {0, 0, 0, 0};
@@ -900,7 +907,7 @@ QVector<Candidate> searchResync(const QByteArray &jpeg, qint64 bitPos, int maxBi
                 break;
             ++c.cleanMcus;
         }
-        if (c.cleanMcus >= window)
+        if (c.cleanMcus >= window || (toTheEnd && c.cleanMcus >= limit))
             c.reachedEnd = true;
         for (int k = 0; k < nc; ++k) {
             if (steps[k].isEmpty())
@@ -941,7 +948,11 @@ QVector<Candidate> searchResync(const QByteArray &jpeg, qint64 bitPos, int maxBi
     // Screening: a short decode for every candidate, which is all a wrong one
     // ever gets before it fails. The few that survive with the best DC are
     // then decoded over the whole window.
-    const int screen = qMin(window, qMax(48, qMin(W, 160)));
+    // Long enough that random bits fail it (they rarely survive a dozen
+    // MCUs), short enough that a folder's worth of self-synchronizing
+    // candidates costs little; the DC offset over it is rough, but only has
+    // to keep the right candidate among the finalists.
+    const int screen = qMin(window, 48);
     QVector<Candidate> screened;
     const auto consider = [&](int delta, qint64 at) {
         const Candidate c = evaluate(delta, at, screen);
@@ -965,7 +976,9 @@ QVector<Candidate> searchResync(const QByteArray &jpeg, qint64 bitPos, int maxBi
     // the decoder choked. Cutting exactly those bytes restores the stream
     // bit for bit, so try every byte-aligned position in that stretch with
     // every whole-byte length.
-    qint64 limit = start + 8 * 64;
+    // Up to the end of the first MCU that failed to decode, which is where
+    // the garbage must have started by -- at most 1 KiB on.
+    qint64 limit = start + 8 * 1024;
     for (int i = qMax(0, m0); i < before.mcus.size(); ++i) {
         if (before.mcus[i].anomalies) {
             const qsizetype raw0 = raw.rawIndexOf(qsizetype(before.mcus[i].bitPos >> 3));
@@ -974,17 +987,22 @@ QVector<Candidate> searchResync(const QByteArray &jpeg, qint64 bitPos, int maxBi
             break;
         }
     }
+    // At most 256 byte positions: past that the selected MCU is not where the
+    // damage starts.
+    limit = qMin(limit, ((start + 7) & ~qint64(7)) + 8 * 256);
     for (qint64 at = (start + 7) & ~qint64(7); at <= limit; at += 8)
         for (int bytes = 1; bytes <= maxBytes; ++bytes)
             consider(bytes * 8, at);
 
-    const auto screenedClean = [screen](const Candidate &c) { return c.cleanMcus >= screen * 9 / 10; };
+    const auto screenedClean = [screen](const Candidate &c) {
+        return c.reachedEnd || c.cleanMcus >= screen * 9 / 10;
+    };
     std::stable_sort(screened.begin(), screened.end(), [&](const Candidate &a, const Candidate &b) {
         if (screenedClean(a) != screenedClean(b))
             return screenedClean(a);
         return resyncScore(a) < resyncScore(b);
     });
-    constexpr int kFinalists = 64;
+    constexpr int kFinalists = 128;
     for (int i = 0; i < screened.size() && i < kFinalists; ++i) {
         const qint64 raw0 = raw.rawIndexOf(qsizetype(screened[i].bitPos >> 3));
         out.append(evaluate(screened[i].deltaBits, qint64(raw0) * 8 + (screened[i].bitPos & 7), window));

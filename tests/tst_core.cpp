@@ -495,6 +495,8 @@ private slots:
             if (a && differing <= 2 && local)
                 goodRank = rank;
         }
+        if (qEnvironmentVariableIsSet("MCU_STUDIO_LONG_TESTS"))
+            qInfo("first good fix at rank %d", goodRank);
         QVERIFY(goodRank >= 0);
         QVERIFY2(goodRank < 5, qPrintable(QStringLiteral("first good fix at rank %1").arg(goodRank)));
     }

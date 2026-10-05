@@ -80,4 +80,9 @@ struct Project {
 bool write(const QString &projectPath, const Project &project, QString *error);
 std::optional<Project> read(const QString &projectPath, QString *error);
 
+// Opens the image `project` repairs the way it was opened when the project
+// was made (rebuilding a donor transplant if there was one), without the
+// recipe: adopt project.steps afterwards.
+bool openSource(const Project &project, ImageDocument &doc, QString *error);
+
 } // namespace project

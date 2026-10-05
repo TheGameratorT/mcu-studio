@@ -1,5 +1,70 @@
 # MCU Studio: audit and roadmap
 
+## Status
+
+Everything below was written against commit `7f67cf3`. Since then:
+
+**Audit findings (part 1)**
+
+| # | Status |
+|---|---|
+| A1 Donor splice replaced the file's own tables | **Fixed.** The splice keeps the damaged file's surviving DQT/DHT tables slot by slot, and its SOF/SOS/DRI when they survive and agree; the donor fills in the rest. |
+| A2 Trailers reported as damage | **Fixed.** Data after a clean EOI is classified (MPF, motion photo, embedded JPEG, STOP/Djvu footer, unknown), kept out of the damage report, and carried into exports with the MPF index rewritten. |
+| A3 Boundary heuristic ran into trailers | **Fixed.** The search stops at the image's own end and ignores the file's own header markers. |
+| A4 Auto color changed sampling and moved the grid | **Fixed.** Auto color re-quantizes into the file's own tables and sampling, in memory, so the grid and later steps stay put and nothing is written in between. |
+| A5 Clipboard could not tell 4:2:2 from 4:4:0 | **Fixed.** Sampling factors are compared. |
+| B1 "Block" used for MCU | **Fixed** throughout the UI. "Block" now means an 8×8 block, which the new block-level shift works on. |
+| B2 Progressive files | **Addressed.** The info panel and log say when scan order is not MCU order; the Scans tab lists scans and can keep the intact ones. |
+| B3 Restart markers | **Fixed.** Spliced data's RST markers are renumbered from RST0 (gaps kept); the modulo-8 ambiguity is documented. |
+| B4–B6, B9, B11 Wording | **Fixed** in code and README (bottom dummy row, "same quantization" rather than "the blocks the camera would have stored", auto levels / midtone contrast, the unsourced 624 KiB guess removed, stale comment). |
+| B7 Performance claim | **Replaced** with measured numbers, the hardware they came from, and `mcu-studio-cli bench` to reproduce them. |
+| B8 libjpeg vs libjpeg-turbo | **Fixed.** Virtual arrays are accessed one row group at a time as the memory manager expects; CMake warns without libjpeg-turbo. |
+| B10 Undo history | **Fixed.** The history is saved in the project file. |
+| 1.4 Oversized headers, CDELTA range, project identity, tests | **Fixed.** 400 MP cap before allocation; DC clamped (and damaged coefficients sanitized on load); SHA-256 in projects; a Qt Test suite and libFuzzer harnesses in CI. |
+
+**Roadmap items (part 3)**
+
+| Item | Status |
+|---|---|
+| P0 | Done (above). |
+| F1 bitstream map | Done: per-MCU bit positions, DC predictors and anomaly flags for sequential Huffman scans; hex view. Progressive files are not mapped. |
+| F2 byte/bit edits | Done: delete/insert bytes, delete/insert bits with restuffing, flip bit, cut; recipe steps. |
+| F3 sub-MCU shift | Done: single-block insert/delete in coding order. |
+| F4 scope to next restart | Done. |
+| F5 DC re-baselining | Covered by F4 plus the DC estimate. |
+| F6 damage map | Done (overlay, F3 to jump). |
+| F7 auto-align | Done for MCU shifts (seam ranking); the bit/byte-level counterpart is the resync search, with ranked, previewable candidates. |
+| F8 auto DC | Done, measured on coefficient-domain block edges. |
+| F9 progressive | Scan list and "keep scans up to here"; no per-scan bit maps. |
+| F10 embedded previews | Done. |
+| F11 donor library | Done: rank a folder by decode health. |
+| F12 header merge/editor | Merge done; frame size and restart interval editable. Sampling factors and scan-header fields are not. |
+| F13 width detection | Done. |
+| F14 STOP/Djvu | Done: footer detection and stripping, personal ID and offline-ID hint, 150 KiB default, batch splicing in the CLI. |
+| F15–F17 engine | Done: in-memory coefficients, sample-exact preview decoder, dirty-row decoding. The DC-only fast path (F17) proved unnecessary at these speeds. |
+| F18 checkpoints / threading | Replay from the in-memory base is a few ms, so checkpoints were not needed; Auto color results are cached. Commits still run on the UI thread. |
+| F19 viewport decoding | Not done: a full 10 MP decode takes 24 ms across 4 threads. |
+| F20 parallelism | Rendering is multithreaded; donor ranking and searches run in the background. The resync search itself is single-threaded. |
+| F21 benchmark | `mcu-studio-cli bench`, run in CI. |
+| F22 CLI | Done: info, triage, apply, resync, splice (incl. folders), carve, extract, bench. |
+| F23 batch triage | Done (dialog and CLI). |
+| F24 carving | Done (GUI and CLI). |
+| F25 report | Done. |
+| F26 provenance | Done (overlay and report). |
+| F27 requantized paste | Done. |
+| F28 compare | Toggle to the original (`\`); no split or onion-skin view. |
+| F29 Exif hygiene | Thumbnail refreshed, pixel dimensions fixed after a transplant, orientation shown. |
+| F30 12-bit / arithmetic | Arithmetic-coded files are written arithmetic-coded. 12-bit needs libjpeg-turbo 3's API and is not done. |
+| F31 keyboard search | Done (`[` `]` `{` `}`, Ctrl+Enter, Esc). |
+| F32 persistent undo | Done. |
+| F33 tests | Done (84 tests, plus an opt-in 40-case sweep). |
+| F34 fuzzing | Done (6 harnesses, in CI). |
+| F35 split MainWindow | Partly: new features live in their own files (analysis dock, dialogs, core modules); MainWindow itself was not broken up. |
+| F36 CI matrix | Done: Linux, Windows, macOS, fuzzing. |
+| F37 translations | Not done. |
+
+---
+
 This document has three parts. The first checks what the README and the
 in-app text claim against what the code does. The second checks that the
 terms the tool uses mean what JPEG people take them to mean. The third is a

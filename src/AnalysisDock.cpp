@@ -111,6 +111,29 @@ AnalysisDock::AnalysisDock(QWidget *parent)
     buildFileTab(file);
     m_tabs->addTab(file, tr("File"));
 
+    connect(&m_searchWatcher, &QFutureWatcherBase::finished, this, [this] {
+        QApplication::restoreOverrideCursor();
+        m_resyncButton->setEnabled(true);
+        m_candidates = m_searchWatcher.result();
+        m_resyncList->clear();
+        if (m_candidates.size() > 25)
+            m_candidates.resize(25);
+        for (const bitstream::Candidate &c : m_candidates) {
+            const QString what = c.deltaBits == 0 ? tr("leave as is")
+                : c.deltaBits > 0 ? (c.deltaBits % 8 == 0 && c.deltaBits >= 64
+                                         ? tr("delete %n byte(s)", nullptr, c.deltaBits / 8)
+                                         : tr("delete %n bit(s)", nullptr, c.deltaBits))
+                                  : tr("insert %n zero bit(s)", nullptr, -c.deltaBits);
+            m_resyncList->addItem(tr("%1 at byte %2  ·  %3 MCUs clean  ·  offset %4, seams %5")
+                                      .arg(what)
+                                      .arg(c.bitPos >> 3)
+                                      .arg(c.cleanMcus)
+                                      .arg(c.dcStep, 0, 'f', 1)
+                                      .arg(c.edgeCost, 0, 'f', 1));
+        }
+        if (!m_candidates.isEmpty())
+            m_resyncList->setCurrentRow(0);
+    });
     connect(&m_mapWatcher, &QFutureWatcherBase::finished, this, [this] {
         m_map = m_mapWatcher.result();
         refreshSummary();
@@ -151,9 +174,12 @@ void AnalysisDock::buildBitstreamTab(QWidget *tab)
 
     m_resyncButton = new QPushButton(tr("Search for a resync at this MCU"), tab);
     m_resyncButton->setToolTip(
-        tr("Decodes on from this MCU's first bit under every deletion or insertion of up to 64 "
-           "bits, and every deletion of up to 2 KiB, and ranks them by how far the stream then "
-           "decodes cleanly. Select the MCU where the damage starts first."));
+        tr("Tries every deletion or insertion of up to 64 bits at this MCU's first bit, every "
+           "longer deletion up to 2 KiB, and every whole-byte deletion starting between here and "
+           "the first decode error. Keeps the ones after which the stream decodes cleanly, and "
+           "ranks them by the DC offset they leave against the rows above and by how the first "
+           "MCUs' edges meet their neighbors. Selecting one previews it. Select the MCU where the "
+           "damage starts first."));
     connect(m_resyncButton, &QPushButton::clicked, this, &AnalysisDock::onSearchResync);
     v->addWidget(m_resyncButton);
     m_resyncList = new QListWidget(tab);
@@ -161,20 +187,22 @@ void AnalysisDock::buildBitstreamTab(QWidget *tab)
     v->addWidget(m_resyncList);
     m_applyResyncButton = new QPushButton(tr("Apply the selected fix"), tab);
     m_applyResyncButton->setEnabled(false);
-    connect(m_resyncList, &QListWidget::currentRowChanged, this,
-            [this](int row) { m_applyResyncButton->setEnabled(row >= 0 && row < m_candidates.size()); });
+    connect(m_resyncList, &QListWidget::currentRowChanged, this, [this](int row) {
+        const bool ok = row >= 0 && row < m_candidates.size();
+        m_applyResyncButton->setEnabled(ok && m_candidates.at(row).deltaBits != 0);
+        // Selecting a candidate shows it: the ranking narrows the search, the
+        // eye settles it.
+        if (ok && m_candidates.at(row).deltaBits != 0)
+            emit byteEditsPreviewRequested({editFor(m_candidates.at(row))});
+        else
+            emit byteEditsPreviewRequested({});
+    });
     connect(m_applyResyncButton, &QPushButton::clicked, this, [this] {
         const int row = m_resyncList->currentRow();
-        if (row < 0 || row >= m_candidates.size())
+        if (row < 0 || row >= m_candidates.size() || m_candidates.at(row).deltaBits == 0)
             return;
-        const bitstream::Candidate &c = m_candidates.at(row);
-        if (c.deltaBits == 0)
-            return;
-        ByteEdit e;
-        e.kind = c.deltaBits > 0 ? ByteEdit::Kind::DeleteBits : ByteEdit::Kind::InsertBits;
-        e.offset = c.bitPos >> 3;
-        e.bit = int(c.bitPos & 7);
-        e.count = std::abs(c.deltaBits);
+        const ByteEdit e = editFor(m_candidates.at(row));
+        emit byteEditsPreviewRequested({});
         emit byteEditsRequested({e}, tr("Resync: %1").arg(e.describe()));
     });
     v->addWidget(m_applyResyncButton);
@@ -352,6 +380,27 @@ void AnalysisDock::showMcu(int base)
     m_editBit->setValue(int(r.bitPos & 7));
 }
 
+ByteEdit AnalysisDock::editFor(const bitstream::Candidate &c) const
+{
+    ByteEdit e;
+    e.kind = c.deltaBits > 0 ? ByteEdit::Kind::DeleteBits : ByteEdit::Kind::InsertBits;
+    e.offset = c.bitPos >> 3;
+    e.bit = int(c.bitPos & 7);
+    e.count = std::abs(c.deltaBits);
+    // Whole bytes at a byte boundary are a plain byte deletion: the same
+    // edit, and one that reads the way the damage happened.
+    if (e.kind == ByteEdit::Kind::DeleteBits && e.bit == 0 && e.count % 8 == 0) {
+        bool stuffed = false;
+        for (qint64 i = e.offset; i < e.offset + e.count / 8 + 1 && i < m_stream.size(); ++i)
+            stuffed = stuffed || quint8(m_stream.at(i)) == 0xFF;
+        if (!stuffed) {
+            e.kind = ByteEdit::Kind::DeleteBytes;
+            e.count /= 8;
+        }
+    }
+    return e;
+}
+
 void AnalysisDock::onSearchResync()
 {
     if (!m_map.isValid() || m_currentBase < 0 || m_currentBase >= m_map.mcus.size()) {
@@ -359,30 +408,15 @@ void AnalysisDock::onSearchResync()
                                  tr("Select the MCU where the damage starts first."));
         return;
     }
+    if (m_searchWatcher.isRunning())
+        return;
     const qint64 bitPos = m_map.mcus.at(m_currentBase).bitPos;
     const QByteArray bytes = m_stream;
-    QApplication::setOverrideCursor(Qt::WaitCursor);
-    m_candidates = QtConcurrent::run([bytes, bitPos] { return bitstream::searchResync(bytes, bitPos); })
-                       .result();
-    QApplication::restoreOverrideCursor();
-
+    QApplication::setOverrideCursor(Qt::BusyCursor);
+    m_resyncButton->setEnabled(false);
     m_resyncList->clear();
-    if (m_candidates.size() > 25)
-        m_candidates.resize(25);
-    for (const bitstream::Candidate &c : m_candidates) {
-        QString what = c.deltaBits == 0 ? tr("leave as is")
-            : c.deltaBits > 0 ? (c.deltaBits % 8 == 0 && c.deltaBits > 64
-                                     ? tr("delete %1 bytes").arg(c.deltaBits / 8)
-                                     : tr("delete %n bit(s)", nullptr, c.deltaBits))
-                              : tr("insert %n zero bit(s)", nullptr, -c.deltaBits);
-        m_resyncList->addItem(tr("%1  →  %2 MCUs decode cleanly%3")
-                                  .arg(what)
-                                  .arg(c.cleanMcus)
-                                  .arg(c.reachedEnd ? tr(", lands exactly on the next restart / window end")
-                                                    : QString()));
-    }
-    if (!m_candidates.isEmpty())
-        m_resyncList->setCurrentRow(0);
+    m_resyncList->addItem(tr("Searching…"));
+    m_searchWatcher.setFuture(QtConcurrent::run([bytes, bitPos] { return bitstream::searchResync(bytes, bitPos); }));
 }
 
 void AnalysisDock::onApplyManualEdit()

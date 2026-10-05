@@ -563,4 +563,28 @@ std::optional<Project> read(const QString &projectPath, QString *error)
     return result;
 }
 
+bool openSource(const Project &project, ImageDocument &doc, QString *error)
+{
+    if (!project.donor)
+        return doc.load(project.sourcePath, error, project.salvageMode);
+    QFile broken(project.sourcePath), donorFile(project.donor->path);
+    if (!broken.open(QIODevice::ReadOnly)) {
+        if (error)
+            *error = tr("Could not read %1: %2").arg(project.sourcePath, broken.errorString());
+        return false;
+    }
+    if (!donorFile.open(QIODevice::ReadOnly)) {
+        if (error)
+            *error = tr("Could not read %1: %2").arg(project.donor->path, donorFile.errorString());
+        return false;
+    }
+    const QByteArray donorBytes = donorFile.readAll();
+    const auto spliced = donor::splice(donorBytes, donor::scan(donorBytes), broken.readAll(),
+                                       project.donor->spliceOffset, error, project.donor->options);
+    if (!spliced)
+        return false;
+    return doc.loadReconstructed(project.sourcePath, spliced->bytes, project.donor->path,
+                                 project.donor->spliceOffset, error);
+}
+
 } // namespace project

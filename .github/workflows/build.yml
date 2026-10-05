@@ -1,7 +1,8 @@
 # CI + releases.
 #
-# Every push/PR builds Linux and Windows (including the Windows installer,
-# uploaded as a workflow artifact). Releasing is just:
+# Every push/PR builds and tests Linux, Windows (including the Windows
+# installer, uploaded as a workflow artifact) and macOS, and fuzzes the parsers
+# for a few minutes. Releasing is just:
 #
 #   git tag v1.2.3 && git push --tags
 #
@@ -48,17 +49,29 @@ jobs:
       run: |
         cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
         cmake --build build
-    - name: Smoke-test the binary
-      # The app is GUI-only, so the check is that it links, starts, and its Qt
-      # plugins resolve far enough to answer --version under the offscreen
-      # platform. A missing runtime dependency fails here rather than on a
-      # user's desktop.
+    - name: Unit tests
+      run: QT_QPA_PLATFORM=offscreen ctest --test-dir build --output-on-failure
+    - name: Smoke-test the binaries
+      # The check is that both programs link and start, that the GUI's Qt
+      # plugins resolve far enough to open a JPEG and render it under the
+      # offscreen platform, and that the CLI reads one. A missing runtime
+      # dependency fails here rather than on a user's desktop.
       run: |
         QT_QPA_PLATFORM=offscreen ./build/bin/mcu-studio --version
+        QT_QPA_PLATFORM=offscreen ./build/bin/mcu-studio fuzz/corpus/444.jpg --screenshot screenshot.png
+        test -s screenshot.png
+        ./build/bin/mcu-studio-cli info fuzz/corpus/baseline_rst.jpg
+        ./build/bin/mcu-studio-cli bench fuzz/corpus/444.jpg --repeat 1
+    - name: Upload screenshot
+      uses: actions/upload-artifact@v7
+      with:
+        name: linux-screenshot
+        path: screenshot.png
     - name: Check install rules
       run: |
         DESTDIR="$PWD/staged" cmake --install build --prefix /usr
         test -x staged/usr/bin/mcu-studio
+        test -x staged/usr/bin/mcu-studio-cli
         test -f staged/usr/share/applications/mcu-studio.desktop
         test -f staged/usr/share/icons/hicolor/scalable/apps/mcu-studio.svg
     - name: Validate the desktop entry
@@ -99,6 +112,8 @@ jobs:
       run: |
         cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
         cmake --build build
+    - name: Unit tests
+      run: QT_QPA_PLATFORM=offscreen ctest --test-dir build --output-on-failure
     - name: Build installer
       run: cmake --build build --target installer
     - name: Upload installer artifact
@@ -112,3 +127,45 @@ jobs:
       with:
         files: build/McuStudio-*-Setup.exe
         generate_release_notes: true
+
+  macos:
+    runs-on: macos-latest
+    steps:
+    - uses: actions/checkout@v7
+    - name: Install dependencies
+      run: brew install cmake ninja qt libjpeg-turbo
+    - name: Build
+      run: |
+        cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+          -DCMAKE_PREFIX_PATH="$(brew --prefix qt);$(brew --prefix jpeg-turbo)"
+        cmake --build build
+    - name: Unit tests
+      run: QT_QPA_PLATFORM=offscreen ctest --test-dir build --output-on-failure
+
+  fuzz:
+    # A short run of every harness on every push: enough to catch a parser
+    # that regressed into a crash, under AddressSanitizer and UBSan.
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v7
+    - name: Install Qt
+      uses: jurplel/install-qt-action@v4
+      with:
+        version: '6.8.*'
+        cache: true
+    - name: Install build tools
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y cmake ninja-build clang libjpeg-dev
+    - name: Build fuzzers
+      run: |
+        CC=clang CXX=clang++ cmake -B build-fuzz -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+          -DMCU_STUDIO_FUZZ=ON -DMCU_STUDIO_BUILD_TESTS=OFF -DMCU_STUDIO_BUILD_CLI=OFF
+        cmake --build build-fuzz --target fuzzers
+    - name: Fuzz
+      run: |
+        export UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1
+        for t in structure decode bitstream splice exif project; do
+          mkdir -p corpus-$t && cp fuzz/corpus/* corpus-$t/
+          ./build-fuzz/bin/fuzz_$t -max_total_time=45 -rss_limit_mb=4096 corpus-$t
+        done

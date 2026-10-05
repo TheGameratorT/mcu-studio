@@ -57,6 +57,7 @@
 #include "DonorHeader.h"
 #include "DonorHeaderDialog.h"
 #include "EmbeddedImagesDialog.h"
+#include "Exif.h"
 #include "JpegStructure.h"
 #include "Report.h"
 #include "McuGraphicsView.h"
@@ -424,12 +425,34 @@ void MainWindow::buildUi()
     addDockWidget(Qt::RightDockWidgetArea, analysisDock);
     tabifyDockWidget(controlDock, analysisDock);
     controlDock->raise();
-    QAction *analysisAction = viewMenu->addAction(tr("Show &Analysis"));
-    analysisAction->setCheckable(true);
-    analysisAction->setChecked(true);
-    connect(analysisAction, &QAction::toggled, analysisDock, &QWidget::setVisible);
-    connect(analysisDock, &QDockWidget::visibilityChanged, analysisAction, &QAction::setChecked);
+    // The dock's own toggle action: a tabbed dock reports itself invisible
+    // while another tab is in front, and a hand-wired action would hide it
+    // for good on that signal.
+    QAction *analysisAction = analysisDock->toggleViewAction();
+    analysisAction->setText(tr("Show &Analysis"));
+    viewMenu->addAction(analysisAction);
     connect(m_analysisDock, &AnalysisDock::byteEditsRequested, this, &MainWindow::onByteEdits);
+    connect(m_analysisDock, &AnalysisDock::byteEditsPreviewRequested, this,
+            [this](const QVector<ByteEdit> &edits) {
+                if (!m_doc.isOpen())
+                    return;
+                if (edits.isEmpty()) {
+                    m_showingPreview = true; // so showBaseline repaints
+                    showBaseline();
+                    return;
+                }
+                QApplication::setOverrideCursor(Qt::WaitCursor);
+                QString error;
+                const auto rgb = m_doc.previewByteEdits(edits, &error);
+                QApplication::restoreOverrideCursor();
+                if (!rgb) {
+                    log(tr("Preview failed: %1").arg(error));
+                    return;
+                }
+                cancelPreview();
+                m_grid->setPixmap(QPixmap::fromImage(rgb->toImage()));
+                m_showingPreview = true;
+            });
     connect(m_analysisDock, &AnalysisDock::baseMcuRequested, this, &MainWindow::onBaseMcuRequested);
     connect(m_analysisDock, &AnalysisDock::mapChanged, this, [this] {
         m_damage = analysis::DamageMap{};
@@ -2594,6 +2617,15 @@ void MainWindow::updateImageInfo()
         lines << tr("Header borrowed from %1").arg(QFileInfo(m_doc.donorPath()).fileName());
     if (m_doc.trailer().present())
         lines << tr("After the image: %1").arg(m_doc.trailer().describe());
+    // The grid shows the picture as stored, which is what MCUs are laid out
+    // in; viewers rotate it by this tag.
+    static const char *const rotations[] = {"", "", QT_TR_NOOP("mirrored"), QT_TR_NOOP("rotated 180°"),
+                                            QT_TR_NOOP("mirrored vertically"), QT_TR_NOOP("mirrored and rotated 90°"),
+                                            QT_TR_NOOP("rotated 90° clockwise"), QT_TR_NOOP("mirrored and rotated 90°"),
+                                            QT_TR_NOOP("rotated 90° counter-clockwise")};
+    const int orientation = exif::orientation(m_doc.baseBytes());
+    if (orientation > 1)
+        lines << tr("Shown as stored; viewers display it %1").arg(tr(rotations[orientation]));
     if (!info.interleavedSingleScan())
         lines << tr("Insert and delete assume MCU order, which this file's scans do not follow.");
     m_infoLabel->setText(lines.join(QStringLiteral("\n")));

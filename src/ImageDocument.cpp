@@ -384,6 +384,31 @@ ImageDocument::preview(const std::shared_ptr<const jr::Coefs> &state, const jr::
     return out;
 }
 
+std::optional<jr::Samples> ImageDocument::previewByteEdits(const QVector<ByteEdit> &edits,
+                                                           QString *error) const
+{
+    QVector<RepairStep> steps = m_steps;
+    RepairStep step;
+    step.kind = RepairStep::Kind::Bytes;
+    step.edits = edits;
+    int at = 0;
+    for (int i = 0; i < steps.size(); ++i) {
+        if (steps[i].kind == RepairStep::Kind::Bytes)
+            at = i + 1;
+    }
+    steps.insert(at, step);
+    auto rendered = render(steps, error);
+    if (!rendered)
+        return std::nullopt;
+    const jr::Info &now = rendered->first.info;
+    if (now.width != m_base.info.width || now.height != m_base.info.height) {
+        if (error)
+            *error = tr("That edit changes the frame size.");
+        return std::nullopt;
+    }
+    return rendered->second->render(false);
+}
+
 const jr::Samples &ImageDocument::ycbcr() const
 {
     if (!m_ycbcrValid && m_state) {

@@ -212,6 +212,11 @@ public:
     static std::optional<Preview> preview(const std::shared_ptr<const jr::Coefs> &state,
                                           const jr::Samples &rgb, const QVector<jr::Op> &pending,
                                           QString *error);
+    // The picture with `edits` added as a byte-edit step, without committing
+    // it: the stream is re-read, so this costs a decode of the file, but it is
+    // how a candidate fix is judged by eye. Fails, without changing anything,
+    // when the edited stream does not decode or changes the frame.
+    std::optional<jr::Samples> previewByteEdits(const QVector<ByteEdit> &edits, QString *error) const;
 
     // Per MCU, what the recipe did to it: JR_TRACE_* bits, plus kNoData for an
     // MCU whose coefficients the damaged stream never supplied and kReencoded

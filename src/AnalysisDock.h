@@ -36,6 +36,8 @@ public:
 
 signals:
     void byteEditsRequested(const QVector<ByteEdit> &edits, const QString &description);
+    // Show the picture with these edits, uncommitted; an empty list ends it.
+    void byteEditsPreviewRequested(const QVector<ByteEdit> &edits);
     // An MCU of the base file to select, in base coordinates; the window
     // translates it through the recipe's moves.
     void baseMcuRequested(int index);
@@ -68,6 +70,8 @@ private:
     QListWidget *m_resyncList = nullptr;
     QPushButton *m_applyResyncButton = nullptr;
     QVector<bitstream::Candidate> m_candidates;
+    QFutureWatcher<QVector<bitstream::Candidate>> m_searchWatcher;
+    ByteEdit editFor(const bitstream::Candidate &c) const;
 
     QComboBox *m_editKind = nullptr;
     QSpinBox *m_editOffset = nullptr;
