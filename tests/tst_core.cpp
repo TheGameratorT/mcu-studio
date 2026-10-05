@@ -180,13 +180,54 @@ private slots:
         }
     }
 
-    void cdeltaClampsToWritableRange()
+    void cdeltaNeverClipsTheStore()
     {
         const QByteArray jpeg = testutil::make(Spec{});
-        auto c = jr::Coefs::load(jpeg);
+        auto orig = jr::Coefs::load(jpeg);
+        auto c = orig->clone();
+        const int dc0 = c->mcu(0)[0];
+        // Twice over what the first block can be written with (2047 above the
+        // predictor's 0): the store keeps it, the output pulls it in.
         QVERIFY(c->apply({jr::Op::cdelta(0, 2047, jr::Scope::wholeImage())}));
-        QCOMPARE(int(c->mcu(0)[0]), 1023);
-        QVERIFY(c->write(jpeg)); // would fail with JERR_BAD_DCT_COEF unclamped
+        QVERIFY(c->apply({jr::Op::cdelta(0, 2047, jr::Scope::wholeImage())}));
+        QCOMPARE(int(c->mcu(0)[0]), dc0 + 4094);
+        QCOMPARE(int(c->raw()->out_dc[0]), 2047);
+        QVERIFY(c->write(jpeg)); // would fail with JERR_BAD_DCT_COEF unfitted
+
+        // And taking it back is exact, which a clip on the way would break.
+        QVERIFY(c->apply({jr::Op::cdelta(0, -2047, jr::Scope::wholeImage())}));
+        QVERIFY(c->apply({jr::Op::cdelta(0, -2047, jr::Scope::wholeImage())}));
+        const auto bytes = [](const std::shared_ptr<jr::Coefs> &k) {
+            return QByteArray(reinterpret_cast<const char *>(k->raw()->data),
+                              qsizetype(k->raw()->unit_count * 64 * sizeof(int16_t)));
+        };
+        QCOMPARE(bytes(c), bytes(orig));
+        QVERIFY(std::equal(c->raw()->out_dc, c->raw()->out_dc + c->raw()->unit_count,
+                           orig->raw()->out_dc));
+    }
+
+    void driftedDcSurvivesLoadAndUndoes()
+    {
+        // Damage that walks a component's DC far past +/-1024, one legal step
+        // at a time, is undone by a CDELTA -- so load must keep the offset
+        // rather than clip it, or the undo overshoots.
+        const QByteArray jpeg = testutil::make(Spec{});
+        auto orig = jr::Coefs::load(jpeg);
+        const jr::Info info = orig->info();
+        auto c = orig->clone();
+        const jr::Scope rest = jr::Scope::runFrom(0, 1);
+        QVERIFY(c->apply({jr::Op::cdelta(0, -1500, rest)}));
+        QVERIFY(c->apply({jr::Op::cdelta(0, -1500, jr::Scope::runFrom(0, 2))}));
+        const auto drifted = c->write(jpeg);
+        QVERIFY(drifted);
+
+        auto back = jr::Coefs::load(*drifted);
+        QVERIFY(back);
+        QVERIFY(back->mcu(2)[0] < -1024);
+        QVERIFY(back->apply({jr::Op::cdelta(0, 1500, rest), jr::Op::cdelta(0, 1500, jr::Scope::runFrom(0, 2))}));
+        const int per = info.blocksPerMcu * 64;
+        for (int m = 0; m < info.mcuCount(); ++m)
+            QVERIFY(std::equal(back->mcu(m), back->mcu(m) + per, orig->mcu(m)));
     }
 
     void clipboardRejectsDifferentLayout()

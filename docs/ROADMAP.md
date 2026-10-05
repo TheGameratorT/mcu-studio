@@ -20,7 +20,7 @@ Everything below was written against commit `7f67cf3`. Since then:
 | B7 Performance claim | **Replaced** with measured numbers, the hardware they came from, and `mcu-studio-cli bench` to reproduce them. |
 | B8 libjpeg vs libjpeg-turbo | **Fixed.** Virtual arrays are accessed one row group at a time as the memory manager expects; CMake warns without libjpeg-turbo. |
 | B10 Undo history | **Fixed.** The history is saved in the project file. |
-| 1.4 Oversized headers, CDELTA range, project identity, tests | **Fixed.** 400 MP cap before allocation; DC clamped (and damaged coefficients sanitized on load); SHA-256 in projects; a Qt Test suite and libFuzzer harnesses in CI. |
+| 1.4 Oversized headers, CDELTA range, project identity, tests | **Fixed.** 400 MP cap before allocation; coefficients never clipped while editing, only brought into the writable range (AC ±1023, 11-bit DC steps) by the preview and the export; SHA-256 in projects; a Qt Test suite and libFuzzer harnesses in CI. |
 
 **Roadmap items (part 3)**
 

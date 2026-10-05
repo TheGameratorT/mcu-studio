@@ -294,8 +294,15 @@ decoding only the MCU rows whose coefficients changed. The decoder that does
 this reimplements libjpeg's accurate integer IDCT, its "fancy" chroma upsampling
 and its JFIF color conversion. Its output is identical, sample for sample, to
 libjpeg-turbo decoding the exported file: the test suite checks this across
-sampling layouts, odd sizes and progressive files. The Huffman encoder runs only
-when a file is exported.
+sampling layouts, odd sizes and progressive files. (Where a block is overdriven
+past black or white, it saturates the way libjpeg-turbo's SIMD decoders and so
+ordinary viewers do.) The Huffman encoder runs only when a file is exported.
+
+Edits never clip. Coefficients are stored as the damaged stream decoded them
+and as your corrections leave them, however far out of range, so corrections
+can be stacked, overshot and taken back exactly. What a JPEG can actually hold
+(AC terms within ±1023, and each DC within an 11-bit step of the one before it)
+is applied only on the way out, by the preview and the export alike.
 
 ### DC offsets
 

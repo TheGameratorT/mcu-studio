@@ -293,8 +293,10 @@ Clipboard Clipboard::requantized(const QVector<quint16> &quantTables) const
                 for (int i = 0; i < 64; ++i) {
                     if (p[i] == 0 || qd[i] == 0)
                         continue;
+                    // Only the store's own int16 bounds: what a JPEG can hold
+                    // is applied on the way out (jr_coefs_refresh_dc).
                     const long v = std::lround(double(p[i]) * qs[i] / qd[i]);
-                    p[i] = qint16(qBound(-1023L, v, 1023L));
+                    p[i] = qint16(qBound(-32767L, v, 32767L));
                 }
             }
         }
@@ -414,11 +416,6 @@ const qint16 *Coefs::mcu(int index) const
         + qsizetype(index) * m_c->info.blocks_per_mcu * 64;
 }
 
-qint16 *Coefs::mcu(int index)
-{
-    return reinterpret_cast<qint16 *>(m_c->data) + qsizetype(index) * m_c->info.blocks_per_mcu * 64;
-}
-
 std::optional<Clipboard> Coefs::readMcus(int row, int col, int count, QString *error) const
 {
     CBuffer coefs;
@@ -525,9 +522,15 @@ QVector<int> Coefs::changedRows(const Coefs &other) const
     const size_t rowBytes = size_t(a->info.mcus_x) * size_t(a->info.blocks_per_mcu) * 64 * sizeof(int16_t);
     const char *pa = reinterpret_cast<const char *>(a->data);
     const char *pb = reinterpret_cast<const char *>(b->data);
+    // The output DCs too: an edit up the image can move where a DC chain that
+    // ran out of range gets pulled back in, rows away from the edit itself.
+    const size_t dcRowBytes = size_t(a->info.mcus_x) * size_t(a->info.blocks_per_mcu) * sizeof(int16_t);
+    const char *da = reinterpret_cast<const char *>(a->out_dc);
+    const char *db = reinterpret_cast<const char *>(b->out_dc);
     QVector<char> dirty(a->info.mcus_y, 0);
     for (int r = 0; r < a->info.mcus_y; ++r) {
-        if (std::memcmp(pa + size_t(r) * rowBytes, pb + size_t(r) * rowBytes, rowBytes) != 0) {
+        if (std::memcmp(pa + size_t(r) * rowBytes, pb + size_t(r) * rowBytes, rowBytes) != 0
+            || std::memcmp(da + size_t(r) * dcRowBytes, db + size_t(r) * dcRowBytes, dcRowBytes) != 0) {
             for (int d = -1; d <= 1; ++d) {
                 if (r + d >= 0 && r + d < a->info.mcus_y)
                     dirty[r + d] = 1;

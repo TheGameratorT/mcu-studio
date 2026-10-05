@@ -443,7 +443,10 @@ static jr_coefs *coefs_alloc(const jr_info *info) {
   }
   c->unit_count = (size_t)info->mcus_x * (size_t)info->mcus_y * (size_t)info->blocks_per_mcu;
   c->data = (int16_t *)calloc(c->unit_count ? c->unit_count * 64 : 1, sizeof(int16_t));
-  if (!c->data) {
+  c->out_dc = (int16_t *)calloc(c->unit_count ? c->unit_count : 1, sizeof(int16_t));
+  if (!c->data || !c->out_dc) {
+    free(c->data);
+    free(c->out_dc);
     free(c);
     return NULL;
   }
@@ -454,6 +457,7 @@ static jr_coefs *coefs_alloc(const jr_info *info) {
 void jr_coefs_free(jr_coefs *c) {
   if (!c) return;
   free(c->data);
+  free(c->out_dc);
   free(c);
 }
 
@@ -464,18 +468,32 @@ jr_coefs *jr_coefs_clone(const jr_coefs *src) {
   if (!c) return NULL;
   *c = *src;
   c->data = (int16_t *)malloc(src->unit_count ? src->unit_count * 64 * sizeof(int16_t) : 1);
-  if (!c->data) {
+  c->out_dc = (int16_t *)malloc(src->unit_count ? src->unit_count * sizeof(int16_t) : 1);
+  if (!c->data || !c->out_dc) {
+    free(c->data);
+    free(c->out_dc);
     free(c);
     return NULL;
   }
   memcpy(c->data, src->data, src->unit_count * 64 * sizeof(int16_t));
+  memcpy(c->out_dc, src->out_dc, src->unit_count * sizeof(int16_t));
   return c;
 }
 
 int jr_coefs_copy_into(jr_coefs *dst, const jr_coefs *src) {
   if (!dst || !src || dst->unit_count != src->unit_count) return -1;
   memcpy(dst->data, src->data, src->unit_count * 64 * sizeof(int16_t));
+  memcpy(dst->out_dc, src->out_dc, src->unit_count * sizeof(int16_t));
   return 0;
+}
+
+void jr_coefs_output_block(const jr_coefs *c, const int16_t *blk, int16_t *out) {
+  int i;
+  out[0] = c->out_dc[(size_t)(blk - c->data) / 64];
+  for (i = 1; i < 64; i++) {
+    const int v = blk[i];
+    out[i] = (int16_t)(v < -1023 ? -1023 : (v > 1023 ? 1023 : v));
+  }
 }
 
 int16_t *jr_coefs_block(jr_coefs *c, int comp, int by, int bx) {
@@ -564,9 +582,7 @@ int jr_coefs_load(const uint8_t *in, size_t in_len, jr_coefs **out, char *err, s
 
   jpeg_finish_decompress(&cinfo);
   jpeg_destroy_decompress(&cinfo);
-  /* Once, here: every later edit stays in range by construction (CDELTA
-     clamps, pastes come from libjpeg's own encoder or from these blocks). */
-  jr_coefs_sanitize(c);
+  jr_coefs_refresh_dc(c);
   *out = c;
   return 0;
 }
@@ -607,10 +623,10 @@ int jr_coefs_apply(jr_coefs *c, const jr_op *ops, size_t n_ops, char *err, size_
           continue;
         blk = c->data + ((size_t)m * (size_t)s.bpm + (size_t)c->comp_offset[comp]) * 64;
         for (k = 0; k < nb; k++) {
-          /* Clamped to what the Huffman coder can write, as jr_coefs_sanitize
-             would: see there. */
+          /* Never clipped to what a JPEG can store -- see
+             jr_coefs_refresh_dc -- only kept inside the store's int16. */
           int v = blk[(size_t)k * 64] + delta;
-          blk[(size_t)k * 64] = (int16_t)(v < -1024 ? -1024 : (v > 1023 ? 1023 : v));
+          blk[(size_t)k * 64] = (int16_t)(v < -32767 ? -32767 : (v > 32767 ? 32767 : v));
         }
       }
     } else if (op->type == JR_OP_PASTE) {
@@ -619,29 +635,54 @@ int jr_coefs_apply(jr_coefs *c, const jr_op *ops, size_t n_ops, char *err, size_
       run_geometric_op(&s, op);
     }
   }
+  jr_coefs_refresh_dc(c);
   return 0;
 }
 
-long jr_coefs_sanitize(jr_coefs *c) {
-  size_t u;
+/* The DC the encoder can write for a block whose stored DC is `dc`, given
+   the DC it wrote before it; counts the blocks where the two differ. */
+static int fit_dc_step(int16_t dc, int prev, int16_t *out, long *changed) {
+  int v = dc;
+  if (v > prev + 2047) v = prev + 2047;
+  else if (v < prev - 2047) v = prev - 2047;
+  if (v != dc) (*changed)++;
+  *out = (int16_t)v;
+  return v;
+}
+
+long jr_coefs_refresh_dc(jr_coefs *c) {
   long changed = 0;
+  int ci;
   if (!c) return 0;
-  for (u = 0; u < c->unit_count; u++) {
-    int16_t *b = c->data + u * 64;
-    int i, hit;
-    /* Branch-free over the AC terms so the common, clean block costs a few
-       vector instructions rather than 63 predictions. */
-    int dc = b[0];
-    int nd = dc < -1024 ? -1024 : (dc > 1023 ? 1023 : dc);
-    hit = nd != dc;
-    b[0] = (int16_t)nd;
-    for (i = 1; i < 64; i++) {
-      const int v = b[i];
-      const int nv = v < -1023 ? -1023 : (v > 1023 ? 1023 : v);
-      hit |= nv != v;
-      b[i] = (int16_t)nv;
+  /* Coding order is jr_coefs_write's: one interleaved scan in MCU order, or
+     for a single component a non-interleaved one over its own blocks, without
+     the MCU grid's padding. No restart interval is written, so the predictor
+     starts at 0 once. Padding blocks the scan never codes still get an output
+     DC (their own) so the preview has something to show. */
+  for (ci = 0; ci < c->info.num_components; ci++) {
+    int prev = 0;
+    if (c->info.num_components == 1) {
+      const int bw = (c->info.width + 7) / 8, bh = (c->info.height + 7) / 8;
+      const int pw = c->info.mcus_x * c->info.h_samp[ci], ph = c->info.mcus_y * c->info.v_samp[ci];
+      int by, bx;
+      for (by = 0; by < ph; by++)
+        for (bx = 0; bx < pw; bx++) {
+          const int16_t *b = jr_coefs_block(c, ci, by, bx);
+          const size_t u = (size_t)(b - c->data) / 64;
+          if (by < bh && bx < bw) prev = fit_dc_step(b[0], prev, &c->out_dc[u], &changed);
+          else c->out_dc[u] = b[0];
+        }
+    } else {
+      const long mcus = (long)c->info.mcus_x * c->info.mcus_y;
+      const int nb = c->info.h_samp[ci] * c->info.v_samp[ci];
+      long m;
+      int k;
+      for (m = 0; m < mcus; m++) {
+        const size_t u = (size_t)m * (size_t)c->info.blocks_per_mcu + (size_t)c->comp_offset[ci];
+        for (k = 0; k < nb; k++)
+          prev = fit_dc_step(c->data[(u + (size_t)k) * 64], prev, &c->out_dc[u + (size_t)k], &changed);
+      }
     }
-    changed += hit;
   }
   return changed;
 }
@@ -733,8 +774,8 @@ int jr_coefs_write(const jr_coefs *c, const uint8_t *src, size_t src_len,
       int yy, bx;
       for (yy = 0; yy < v; yy++)
         for (bx = 0; bx < bw; bx++)
-          memcpy(rows[yy][bx], jr_coefs_block((jr_coefs *)c, ci, mrow * v + yy, bx),
-                 64 * sizeof(int16_t));
+          jr_coefs_output_block(c, jr_coefs_block((jr_coefs *)c, ci, mrow * v + yy, bx),
+                                rows[yy][bx]);
     }
   }
 

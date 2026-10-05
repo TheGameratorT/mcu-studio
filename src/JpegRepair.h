@@ -278,9 +278,7 @@ public:
     // 64 per component, natural order.
     QVector<quint16> quantTables() const;
     const jr_coefs *raw() const { return m_c; }
-    jr_coefs *raw() { return m_c; }
     const qint16 *mcu(int index) const;
-    qint16 *mcu(int index);
 
     // Decodes the whole picture, split across the thread pool.
     Samples render(bool ycbcr) const;
@@ -321,8 +319,9 @@ std::optional<Patch> quantizePatch(const QByteArray &destJpeg, const Samples &rg
 // Applies every op in order to one coefficient read, then re-emits the
 // stream. Blocks no op touched keep their exact coefficients, so they decode
 // to the same pixels as before -- repairs never cost a re-encode generation.
-// (Coefficients a damaged stream decoded outside the range a JPEG can store
-// are clamped into it; see jr_coefs_sanitize.)
+// (Coefficients a damaged stream decoded, or edits pushed, outside the range a
+// JPEG can store are kept as they are while editing and only brought into it
+// when written; see jr_coefs_refresh_dc.)
 std::optional<QByteArray> apply(const QByteArray &jpeg, const QVector<Op> &ops,
                                 QString *error = nullptr);
 

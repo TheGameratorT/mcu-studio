@@ -21,16 +21,13 @@
 /* Sample range limiting (jdmaster.c prepare_range_limit_table)        */
 /* ------------------------------------------------------------------ */
 
-/* The IDCT's output is masked to 10 bits and looked up in a table that clamps
-   the plausible part of that range and wraps the rest, rather than clamping
-   everything -- damaged blocks decode differently under the two, so the wrap
-   is kept. */
+/* Samples past black or white saturate. libjpeg-turbo's C IDCT instead masks
+   to 10 bits and wraps the far part of that range, so an overdriven block
+   comes out inverted -- but its SIMD IDCTs, which are what djpeg, browsers
+   and image viewers actually run on x86 and ARM, saturate. In range the two
+   agree exactly; out of range this follows what people will see. */
 static uint8_t idct_limit(int x) {
-  const int t = x & 1023;
-  if (t < 128) return (uint8_t)(t + 128);
-  if (t < 512) return 255;
-  if (t < 896) return 0;
-  return (uint8_t)(t - 896);
+  return (uint8_t)(x < -128 ? 0 : (x > 127 ? 255 : x + 128));
 }
 
 static uint8_t clamp255(int v) { return (uint8_t)(v < 0 ? 0 : (v > 255 ? 255 : v)); }
@@ -198,9 +195,12 @@ static int plane_build(const jr_coefs *c, int ci, int r0, int r1, plane *p) {
   p->pix = (uint8_t *)malloc(p->stride * (size_t)p->rows);
   if (!p->pix) return -1;
   for (by = br0; by < br1; by++)
-    for (bx = 0; bx < bw; bx++)
-      idct_islow(jr_coefs_block((jr_coefs *)c, ci, by, bx), c->quant[ci],
-                 p->pix + (size_t)(by - br0) * 8 * p->stride + (size_t)bx * 8, p->stride);
+    for (bx = 0; bx < bw; bx++) {
+      int16_t blk[64];
+      jr_coefs_output_block(c, jr_coefs_block((jr_coefs *)c, ci, by, bx), blk);
+      idct_islow(blk, c->quant[ci], p->pix + (size_t)(by - br0) * 8 * p->stride + (size_t)bx * 8,
+                 p->stride);
+    }
   return 0;
 }
 

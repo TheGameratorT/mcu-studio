@@ -141,13 +141,18 @@ typedef struct jr_coefs {
   int ds_height[JR_MAX_COMPONENTS];   /* real sample rows per component */
   uint16_t quant[JR_MAX_COMPONENTS][64]; /* natural order */
   size_t unit_count;                  /* mcus * blocks_per_mcu */
-  int16_t *data;                      /* unit_count * 64 */
+  int16_t *data;                      /* unit_count * 64, exactly as edited */
+  /* The DC each block is previewed and written with: data's DC wherever its
+     step from the block coded before it fits in 11 bits, the nearest value
+     that does otherwise. See jr_coefs_refresh_dc. */
+  int16_t *out_dc;                    /* unit_count */
   /* Decoder tables, filled at load so rendering threads only read. */
   int cr_r[256], cb_b[256];
   int32_t cr_g[256], cb_g[256];
 } jr_coefs;
 
-/* Entropy-decodes `in` once. Coefficients are sanitized on the way in. */
+/* Entropy-decodes `in` once. Coefficients are kept as decoded, out-of-range
+   ones included; see jr_coefs_refresh_dc. */
 int jr_coefs_load(const uint8_t *in, size_t in_len, jr_coefs **out,
                   char *err, size_t err_len);
 jr_coefs *jr_coefs_clone(const jr_coefs *c);
@@ -158,30 +163,47 @@ void jr_coefs_free(jr_coefs *c);
 /* The 64 coefficients of one block, or NULL outside the coded grid. */
 int16_t *jr_coefs_block(jr_coefs *c, int comp, int block_row, int block_col);
 
+/* `blk` (a block of c->data) as the preview and the encoder see it: output
+   DC, AC clamped to what the coder can write. See jr_coefs_refresh_dc. */
+void jr_coefs_output_block(const jr_coefs *c, const int16_t *blk, int16_t *out);
+
 int jr_coefs_apply(jr_coefs *c, const jr_op *ops, size_t n_ops,
                    char *err, size_t err_len);
 
-/* Pulls every coefficient into the range an 8-bit Huffman coder can write:
-   AC to +/-1023, DC to [-1024, 1023] so no DC difference needs more than 11
-   bits. Damaged streams decode to coefficients outside that range, and the
-   encoder refuses them (DC) or writes them with codes the tables do not have
-   (AC). jr_coefs_load runs this once, so what is previewed and what is
-   exported are the same picture. Returns the number of blocks it changed. */
-long jr_coefs_sanitize(jr_coefs *c);
+/* Edits never clip. `data` holds whatever the damaged stream decoded to and
+   whatever the edits made of it, so corrections can be stacked, overshot and
+   undone freely: a CDELTA of +2047 followed by -2047 is always a no-op. The
+   limits of what a baseline Huffman coder can store are applied only on the
+   way out, by the preview and by jr_coefs_write alike, so the two always show
+   the same picture:
+
+   - AC coefficients are clamped to +/-1023.
+   - A DC value may be anything, but the step between it and the DC coded
+     before it (same component, coding order, predictor starting at 0) must
+     fit in 11 bits. Damage routinely walks a component's DC far past +/-1024
+     one legal step at a time; a block is only moved when its own step is too
+     big, and the blocks after it are measured from where it landed.
+
+   jr_coefs_load and jr_coefs_apply call this; anything else that writes into
+   `data` must call it before rendering or writing. Returns the number of
+   blocks whose output DC differs from their stored one. */
+long jr_coefs_refresh_dc(jr_coefs *c);
 
 /* Writes `c` as a JPEG. `header_src` is the file the coefficients came from:
    its markers (Exif, ICC, ...) and frame parameters are carried over. The
-   coefficients are written exactly as they are -- no IDCT, no requantization
-   -- with optimized Huffman tables, as a sequential (non-progressive) file. */
+   coefficients are written as jr_coefs_output_block gives them -- no IDCT, no
+   requantization -- with optimized Huffman tables, as a sequential
+   (non-progressive) file. */
 int jr_coefs_write(const jr_coefs *c, const uint8_t *header_src, size_t header_src_len,
                    uint8_t **out, size_t *out_len, char *err, size_t err_len);
 
 /* Decodes MCU rows [mcu_row0, mcu_row1) into `out`, which addresses the whole
    picture (row 0 at `out`, `stride` bytes per row, 3 bytes per pixel). Only
    the picture rows those MCU rows cover are written. The result is the same,
-   sample for sample, as libjpeg-turbo's default decode (islow IDCT, fancy
-   upsampling, JFIF YCbCr->RGB). Safe to call from several threads at once on
-   disjoint row ranges. */
+   sample for sample, as libjpeg-turbo's default decode of what jr_coefs_write
+   produces (islow IDCT, fancy upsampling, JFIF YCbCr->RGB), with overdriven
+   samples saturating as its SIMD IDCTs make them. Safe to call from several
+   threads at once on disjoint row ranges. */
 void jr_coefs_render_rows(const jr_coefs *c, int mcu_row0, int mcu_row1, int ycbcr,
                           uint8_t *out, size_t stride);
 
