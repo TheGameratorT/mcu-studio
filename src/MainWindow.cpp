@@ -2407,6 +2407,10 @@ void MainWindow::loadIntoView()
     m_unitCombo->clear();
     for (int u = 0; u < m_doc.info().blocksPerMcu; ++u)
         m_unitCombo->addItem(m_doc.info().unitName(u));
+    // What syncGridGeometry compares against to notice a byte edit that
+    // changed the frame.
+    m_unitCombo->setProperty("mcusX", m_doc.info().mcusX);
+    m_unitCombo->setProperty("mcusY", m_doc.info().mcusY);
     // The view pads this out into the scrollable scene rect so the image can
     // be dragged freely rather than sitting locked in the middle.
     m_view->setContentRect(m_grid->boundingRect());
