@@ -25,6 +25,7 @@
 
 #include <QByteArray>
 #include <QString>
+#include <QStringList>
 #include <QVector>
 
 #include <optional>
@@ -82,15 +83,49 @@ struct SplicePoint {
 QVector<SplicePoint> splicePoints(const QByteArray &broken, const Layout &brokenLayout,
                                   int restartInterval);
 
+// How the header is assembled.
+struct SpliceOptions {
+    // Where the damaged file's own header survives in part, keep its
+    // quantization and Huffman tables (table by table), frame header, restart
+    // interval and scan header, and borrow from the donor only what is
+    // missing. Its own tables are the ones its data was coded with.
+    bool keepOwnTables = true;
+    // Renumber the restart markers in the spliced data so the first one is
+    // RST0. libjpeg expects RST0 first and treats any other as a lost or
+    // repeated interval -- inserting or skipping a whole interval of the
+    // picture -- so data cut in at RST3 would land an interval off.
+    bool renumberRestarts = true;
+    // Frame size to write instead of the donor's, 0 to keep it. A portrait
+    // shot and a landscape one from the same camera share everything but this.
+    int width = 0, height = 0;
+    // Restart interval to declare instead of the header's: -1 keeps it, 0
+    // declares none.
+    int restartInterval = -1;
+
+    bool operator==(const SpliceOptions &o) const
+    {
+        return keepOwnTables == o.keepOwnTables && renumberRestarts == o.renumberRestarts
+            && width == o.width && height == o.height && restartInterval == o.restartInterval;
+    }
+};
+
 struct Splice {
     QByteArray bytes;
-    qsizetype headerSize = 0; // bytes contributed by the donor
+    qsizetype headerSize = 0; // bytes of assembled header
     bool carriedExif = false; // the damaged file's own Exif survived and was kept
+    // What came from the damaged file's own header rather than the donor's,
+    // for the dialog to say ("DQT 0, DQT 1, SOF"). Empty when it was all the
+    // donor's.
+    QStringList keptOwn;
+    int renumberedRestarts = 0;
+    // Bytes of ransomware footer dropped from the end of the damaged file.
+    qsizetype droppedFooter = 0;
 };
 
 // Donor header + `broken` from `offset` on. Fails if the donor is unusable or
 // the offset leaves nothing behind.
 std::optional<Splice> splice(const QByteArray &donorBytes, const Layout &donorLayout,
-                             const QByteArray &broken, qsizetype offset, QString *error);
+                             const QByteArray &broken, qsizetype offset, QString *error,
+                             const SpliceOptions &options = {});
 
 } // namespace donor

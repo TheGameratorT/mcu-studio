@@ -4,8 +4,11 @@
 #include "DonorHeader.h"
 
 #include <QCoreApplication>
+#include <QMap>
 
 #include <cstring>
+
+#include "JpegStructure.h"
 
 namespace donor {
 namespace {
@@ -211,11 +214,14 @@ bool legalAfterFf(quint8 next)
     return next == 0x00 || next == 0xFF || next == 0xD9 || (next >= 0xD0 && next <= 0xD7);
 }
 
-// Offset of the FF in the last pair that cannot occur inside a scan, or -1.
-qsizetype lastIllegalFf(const QByteArray &jpeg)
+// Offset of the FF in the last pair before `end` that cannot occur inside a
+// scan, or -1. `end` is where the image's own bytes stop: past it sit
+// trailers -- an MPF preview, a motion photo's video, a ransomware footer --
+// that are full of marker bytes and say nothing about where the damage ends.
+qsizetype lastIllegalFf(const QByteArray &jpeg, qsizetype end)
 {
     const auto *d = reinterpret_cast<const quint8 *>(jpeg.constData());
-    for (qsizetype i = jpeg.size() - 2; i >= 0; --i) {
+    for (qsizetype i = qMin(end, jpeg.size()) - 2; i >= 0; --i) {
         if (d[i] == 0xFF && !legalAfterFf(d[i + 1]))
             return i;
     }
@@ -234,11 +240,18 @@ qsizetype firstRestart(const QByteArray &jpeg, qsizetype from)
     return -1;
 }
 
-// Prefix lengths that ransomware families are commonly reported to encrypt
-// before leaving the rest of a file alone -- STOP/DJVU and its relatives. When
-// one of them is the size of the damage, the first intact byte sits exactly on
-// the boundary.
-constexpr qsizetype kKnownEncryptedPrefixes[] = {0x25800, 0x9C000}; // 150 KiB, 624 KiB
+// The prefix STOP/Djvu encrypts before leaving the rest of a file alone:
+// 150 KiB. When it is the size of the damage, the first intact byte sits
+// exactly on the boundary.
+constexpr qsizetype kStopDjvuPrefix = 0x25800;
+
+// Where the damaged file's own bytes end: before a trailer that its own
+// signatures identify, or the whole file.
+qsizetype imageBytesEnd(const QByteArray &broken)
+{
+    const jpegfile::Trailer t = jpegfile::findTrailer(broken, -1);
+    return t.present() ? t.offset : broken.size();
+}
 
 constexpr int kMaxSplicePoints = 12;
 
@@ -336,17 +349,24 @@ QVector<SplicePoint> splicePoints(const QByteArray &broken, const Layout &broken
                           .arg(brokenLayout.problem));
     }
 
-    const qsizetype illegal = lastIllegalFf(broken);
+    const qsizetype end = imageBytesEnd(broken);
+    qsizetype illegal = lastIllegalFf(broken, end);
+    // An "illegal" pair inside the file's own surviving header is just one of
+    // its markers.
+    if (brokenLayout.entropyStart > 0 && illegal >= 0 && illegal < brokenLayout.entropyStart)
+        illegal = -1;
     const qsizetype boundary = illegal >= 0 ? illegal + 2 : 0;
 
     // Restarts are the ideal place to come in: the encoder flushed to a byte
     // boundary and reset its DC predictors there, so data that follows one
-    // decodes correctly without knowing anything about what came before.
+    // decodes correctly without knowing anything about what came before. Which
+    // interval it is cannot be known from the marker alone (they count modulo
+    // 8), so the picture may still need shifting by whole intervals.
     const bool restartsExpected = restartInterval > 0 || brokenLayout.restartInterval > 0;
     bool foundRestart = false;
     if (restartsExpected) {
         qsizetype rst = firstRestart(broken, boundary);
-        for (int i = 0; i < 3 && rst >= 0; ++i) {
+        for (int i = 0; i < 3 && rst >= 0 && rst < end; ++i) {
             foundRestart = true;
             add(rst + 2, i == 0 ? tr("At the first restart marker past the damage (offset %1)")
                                       .arg(rst)
@@ -367,21 +387,21 @@ QVector<SplicePoint> splicePoints(const QByteArray &broken, const Layout &broken
                           .arg(illegal));
     } else {
         explain(tr("Just past the last byte pair no valid JPEG could contain"),
-                tr("unavailable: every FF in this file is followed by a byte that scan data is "
-                   "allowed to contain, so there is no boundary to find"));
+                tr("unavailable: every FF in this file's picture data is followed by a byte "
+                   "scan data is allowed to contain, so there is no boundary to find"));
     }
 
-    for (qsizetype prefix : kKnownEncryptedPrefixes) {
-        if (prefix >= size)
-            continue;
-        const qsizetype rst = restartInterval > 0 ? firstRestart(broken, prefix) : -1;
-        if (rst >= 0) {
-            add(rst + 2, tr("At the first restart marker after %1 KiB, a size ransomware often "
-                            "encrypts (offset %2)")
-                             .arg(prefix / 1024)
+    const bool djvu = jpegfile::findStopDjvuFooter(broken).has_value();
+    if (kStopDjvuPrefix < end) {
+        const qsizetype rst = restartInterval > 0 ? firstRestart(broken, kStopDjvuPrefix) : -1;
+        if (rst >= 0 && rst < end) {
+            add(rst + 2, tr("At the first restart marker after 150 KiB, where STOP/Djvu stops "
+                            "encrypting (offset %1)")
                              .arg(rst));
         }
-        add(prefix, tr("At %1 KiB, a size ransomware often encrypts").arg(prefix / 1024));
+        add(kStopDjvuPrefix, djvu ? tr("At 150 KiB: this file carries the STOP/Djvu footer, and "
+                                       "STOP/Djvu encrypts exactly the first 150 KiB")
+                                  : tr("At 150 KiB, the prefix STOP/Djvu ransomware encrypts"));
     }
 
     if (out.size() > kMaxSplicePoints)
@@ -393,8 +413,135 @@ QVector<SplicePoint> splicePoints(const QByteArray &broken, const Layout &broken
 // Building the transplant
 // ---------------------------------------------------------------------------
 
+namespace {
+
+// One table out of a DQT or DHT segment, keyed by what identifies it (the
+// table slot, and for DHT its class), with the bytes that define it.
+using Tables = QMap<int, QByteArray>;
+
+void collectTables(const QByteArray &jpeg, const Segment &seg, Tables *dqt, Tables *dht)
+{
+    const auto *p = reinterpret_cast<const quint8 *>(jpeg.constData()) + seg.dataStart;
+    qsizetype i = 0;
+    if (seg.marker == 0xDB) {
+        while (i < seg.dataLength) {
+            const int precision = p[i] >> 4, id = p[i] & 15;
+            const qsizetype size = 1 + (precision ? 128 : 64);
+            if (id > 3 || i + size > seg.dataLength)
+                return;
+            dqt->insert(id, QByteArray(reinterpret_cast<const char *>(p + i), size));
+            i += size;
+        }
+    } else if (seg.marker == 0xC4) {
+        while (i + 17 <= seg.dataLength) {
+            int count = 0;
+            for (int l = 1; l <= 16; ++l)
+                count += p[i + l];
+            const qsizetype size = 17 + count;
+            if ((p[i] & 15) > 3 || (p[i] >> 4) > 1 || count > 256 || i + size > seg.dataLength)
+                return;
+            dht->insert(p[i], QByteArray(reinterpret_cast<const char *>(p + i), size));
+            i += size;
+        }
+    }
+}
+
+QByteArray segmentOf(quint8 marker, const QByteArray &payload)
+{
+    QByteArray out;
+    out.append(char(0xFF));
+    out.append(char(marker));
+    const int length = int(payload.size()) + 2;
+    out.append(char(length >> 8));
+    out.append(char(length & 0xFF));
+    out.append(payload);
+    return out;
+}
+
+// The header parts a file carries, as far as it can be read.
+struct HeaderParts {
+    QByteArrayList appSegments; // JFIF, ICC, Adobe: kept from the donor
+    Tables dqt, dht;
+    QByteArray sof, dri, sos;   // whole segments
+};
+
+HeaderParts partsOf(const QByteArray &jpeg, bool donorSide)
+{
+    HeaderParts parts;
+    walkMarkers(jpeg, [&](const Segment &seg) {
+        if (seg.marker == 0xD8)
+            return;
+        const QByteArray whole = jpeg.mid(seg.start, seg.length);
+        if (seg.marker == 0xDB || seg.marker == 0xC4) {
+            collectTables(jpeg, seg, &parts.dqt, &parts.dht);
+        } else if (isSof(seg.marker)) {
+            if (parts.sof.isEmpty())
+                parts.sof = whole;
+        } else if (seg.marker == 0xDD) {
+            parts.dri = whole;
+        } else if (seg.marker == 0xDA) {
+            parts.sos = whole;
+        } else if (donorSide && !isIdentityMarker(jpeg, seg) && seg.marker >= 0xE0 && seg.marker <= 0xEF) {
+            parts.appSegments.append(whole);
+        }
+    });
+    return parts;
+}
+
+// Component ids a frame header declares, and the ones a scan header names.
+QVector<int> sofComponents(const QByteArray &sof)
+{
+    QVector<int> ids;
+    if (sof.size() < 10)
+        return ids;
+    const int n = quint8(sof[9]);
+    for (int c = 0; c < n && 10 + 3 * c < sof.size(); ++c)
+        ids.append(quint8(sof[10 + 3 * c]));
+    return ids;
+}
+
+QVector<int> sosComponents(const QByteArray &sos)
+{
+    QVector<int> ids;
+    if (sos.size() < 5)
+        return ids;
+    const int n = quint8(sos[4]);
+    for (int c = 0; c < n && 5 + 2 * c < sos.size(); ++c)
+        ids.append(quint8(sos[5 + 2 * c]));
+    return ids;
+}
+
+// Renumbers RSTn markers in `data` (entropy-coded bytes) so the first is
+// RST0, keeping the gaps between them. Returns how many it rewrote.
+int renumberRestarts(QByteArray &data, qsizetype from, qsizetype to)
+{
+    auto *d = reinterpret_cast<quint8 *>(data.data());
+    int first = -1, changed = 0;
+    for (qsizetype i = from; i + 1 < to; ++i) {
+        if (d[i] != 0xFF)
+            continue;
+        const quint8 next = d[i + 1];
+        if (next == 0xFF)
+            continue; // fill byte; the marker, if any, follows
+        if (next >= 0xD0 && next <= 0xD7) {
+            if (first < 0)
+                first = next - 0xD0;
+            const quint8 renumbered = quint8(0xD0 + ((next - 0xD0 - first + 8) & 7));
+            if (renumbered != next) {
+                d[i + 1] = renumbered;
+                ++changed;
+            }
+        }
+        ++i;
+    }
+    return changed;
+}
+
+} // namespace
+
 std::optional<Splice> splice(const QByteArray &donorBytes, const Layout &donorLayout,
-                             const QByteArray &broken, qsizetype offset, QString *error)
+                             const QByteArray &broken, qsizetype offset, QString *error,
+                             const SpliceOptions &options)
 {
     const QString problem = donorProblem(donorLayout);
     if (!problem.isEmpty()) {
@@ -402,7 +549,16 @@ std::optional<Splice> splice(const QByteArray &donorBytes, const Layout &donorLa
             *error = tr("The donor %1").arg(problem);
         return std::nullopt;
     }
-    if (offset < 0 || offset >= broken.size()) {
+
+    // A ransomware footer is not picture data, and left in place it would be
+    // decoded as some.
+    qsizetype end = broken.size();
+    qsizetype droppedFooter = 0;
+    if (const auto footer = jpegfile::findStopDjvuFooter(broken)) {
+        end = footer->offset;
+        droppedFooter = footer->length;
+    }
+    if (offset < 0 || offset >= end) {
         if (error) {
             *error = tr("A splice point of %1 leaves none of the damaged file's data behind.")
                          .arg(offset);
@@ -410,26 +566,89 @@ std::optional<Splice> splice(const QByteArray &donorBytes, const Layout &donorLa
         return std::nullopt;
     }
 
+    Splice out;
+    out.droppedFooter = droppedFooter;
+    const HeaderParts donorParts = partsOf(donorBytes, true);
+    HeaderParts own;
+    if (options.keepOwnTables)
+        own = partsOf(broken.left(offset > 0 ? offset : 0), false);
+
+    // Tables: the file's own where it still has them, slot by slot.
+    Tables dqt = donorParts.dqt, dht = donorParts.dht;
+    for (auto it = own.dqt.constBegin(); it != own.dqt.constEnd(); ++it) {
+        dqt.insert(it.key(), it.value());
+        out.keptOwn << QStringLiteral("DQT %1").arg(it.key());
+    }
+    for (auto it = own.dht.constBegin(); it != own.dht.constEnd(); ++it) {
+        dht.insert(it.key(), it.value());
+        out.keptOwn << QStringLiteral("DHT %1%2").arg(it.key() >> 4 ? "AC" : "DC").arg(it.key() & 15);
+    }
+
+    // Frame and scan header travel as a pair: the scan names the frame's
+    // components. Take the file's own only if both survived and agree.
+    QByteArray sof = donorParts.sof, sos = donorParts.sos, dri = donorParts.dri;
+    if (!own.sof.isEmpty() && !own.sos.isEmpty() && sofComponents(own.sof).size() == 3) {
+        const QVector<int> frameIds = sofComponents(own.sof);
+        bool agree = true;
+        for (int id : sosComponents(own.sos))
+            agree = agree && frameIds.contains(id);
+        if (agree) {
+            sof = own.sof;
+            sos = own.sos;
+            out.keptOwn << QStringLiteral("SOF") << QStringLiteral("SOS");
+        }
+    }
+    if (!own.dri.isEmpty()) {
+        dri = own.dri;
+        out.keptOwn << QStringLiteral("DRI");
+    }
+    if (options.restartInterval >= 0) {
+        dri = options.restartInterval > 0
+            ? segmentOf(0xDD, QByteArray::fromRawData("\0\0", 2))
+            : QByteArray();
+        if (!dri.isEmpty()) {
+            dri[4] = char(options.restartInterval >> 8);
+            dri[5] = char(options.restartInterval & 0xFF);
+        }
+    }
+    if (sof.size() >= 9) {
+        if (options.height > 0) {
+            sof[5] = char(options.height >> 8);
+            sof[6] = char(options.height & 0xFF);
+        }
+        if (options.width > 0) {
+            sof[7] = char(options.width >> 8);
+            sof[8] = char(options.width & 0xFF);
+        }
+    }
+
     QByteArray header;
     header.reserve(donorLayout.entropyStart + 64);
     header.append("\xFF\xD8", 2);
-
     const QByteArray ownExif = findOwnExif(broken, offset);
     header.append(ownExif); // Exif belongs first, and the SOI is all that precedes it
+    for (const QByteArray &app : donorParts.appSegments)
+        header.append(app);
+    QByteArray q;
+    for (const QByteArray &t : std::as_const(dqt))
+        q.append(t);
+    if (!q.isEmpty())
+        header.append(segmentOf(0xDB, q));
+    header.append(sof);
+    QByteArray h;
+    for (const QByteArray &t : std::as_const(dht))
+        h.append(t);
+    if (!h.isEmpty())
+        header.append(segmentOf(0xC4, h));
+    header.append(dri);
+    header.append(sos);
 
-    walkMarkers(donorBytes, [&](const Segment &seg) {
-        if (seg.marker == 0xD8) // already written
-            return;
-        if (isIdentityMarker(donorBytes, seg))
-            return;
-        header.append(donorBytes.constData() + seg.start, seg.length);
-    });
-
-    Splice out;
     out.headerSize = header.size();
     out.carriedExif = !ownExif.isEmpty();
     out.bytes = std::move(header);
-    out.bytes.append(broken.constData() + offset, broken.size() - offset);
+    out.bytes.append(broken.constData() + offset, end - offset);
+    if (options.renumberRestarts)
+        out.renumberedRestarts = renumberRestarts(out.bytes, out.headerSize, out.bytes.size());
     // A stream that just stops makes libjpeg complain about a premature end
     // and fill the rest gray, which is fine, but it should still be told where
     // the data ran out.

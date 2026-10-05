@@ -4,6 +4,7 @@
 #include "MainWindow.h"
 
 #include <QAction>
+#include <QActionGroup>
 #include <QApplication>
 #include <QCheckBox>
 #include <QCloseEvent>
@@ -32,9 +33,15 @@
 #include <QPalette>
 #include <QPlainTextEdit>
 #include <QPushButton>
+#include <QInputDialog>
+#include <QJsonDocument>
+#include <QProgressDialog>
+#include <QSaveFile>
 #include <QScrollArea>
+#include <QSettings>
 #include <QSlider>
 #include <QSpinBox>
+#include <QStandardItemModel>
 #include <QStatusBar>
 #include <QTime>
 #include <QTimer>
@@ -44,9 +51,14 @@
 
 #include <cmath>
 
+#include "AnalysisDock.h"
 #include "AutoColor.h"
+#include "BatchDialog.h"
 #include "DonorHeader.h"
 #include "DonorHeaderDialog.h"
+#include "EmbeddedImagesDialog.h"
+#include "JpegStructure.h"
+#include "Report.h"
 #include "McuGraphicsView.h"
 #include "PlatformStyle.h"
 #include "ReferenceColorDialog.h"
@@ -153,20 +165,20 @@ void MainWindow::buildActions()
     m_selectionOverlayAction->setCheckable(true);
     m_selectionOverlayAction->setChecked(true);
 
-    m_selectAllAction = new QAction(tr("Select &All Blocks"), this);
+    m_selectAllAction = new QAction(tr("Select &All MCUs"), this);
     m_selectAllAction->setShortcut(QKeySequence::SelectAll);
     m_clearSelectionAction = new QAction(tr("&Clear Selection"), this);
     m_clearSelectionAction->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_A));
 
-    m_copySelectionAction = new QAction(tr("&Copy Blocks"), this);
+    m_copySelectionAction = new QAction(tr("&Copy MCUs"), this);
     m_copySelectionAction->setShortcut(QKeySequence::Copy);
-    m_copySelectionAction->setToolTip(tr("Lift the selected blocks onto the clipboard."));
+    m_copySelectionAction->setToolTip(tr("Lift the selected MCUs onto the clipboard."));
     connect(m_copySelectionAction, &QAction::triggered, this, &MainWindow::onCopySelection);
 
     m_pasteOverAction = new QAction(tr("&Paste Over"), this);
     m_pasteOverAction->setShortcut(QKeySequence::Paste);
     m_pasteOverAction->setToolTip(
-        tr("Write the clipboard over the blocks from the selection onward."));
+        tr("Write the clipboard over the MCUs from the selection onward."));
     connect(m_pasteOverAction, &QAction::triggered, this, &MainWindow::onPasteOver);
 
     m_pasteInsertAction = new QAction(tr("Paste &Inserting"), this);
@@ -178,9 +190,57 @@ void MainWindow::buildActions()
     m_fillReferenceAction = new QAction(tr("&Fill from Reference Picture…"), this);
     m_fillReferenceAction->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_F));
     m_fillReferenceAction->setToolTip(
-        tr("Replace the blocks in scope with content from another copy of the photograph, in "
-           "any format. Compresses only those blocks."));
+        tr("Replace the MCUs in scope with content from another copy of the photograph, in "
+           "any format. Compresses only those MCUs."));
     connect(m_fillReferenceAction, &QAction::triggered, this, &MainWindow::onFillFromReference);
+
+    m_compareAction = new QAction(tr("Show &Original"), this);
+    m_compareAction->setCheckable(true);
+    m_compareAction->setShortcut(QKeySequence(Qt::Key_Backslash));
+    m_compareAction->setToolTip(tr("Show the file as it was opened, before any repair step. "
+                                   "Toggle it to compare."));
+    connect(m_compareAction, &QAction::toggled, this, [this](bool on) {
+        if (!m_doc.isOpen())
+            return;
+        m_grid->setPixmap(QPixmap::fromImage((on ? m_doc.originalRgb() : m_doc.rgb()).toImage()));
+        m_showingPreview = false;
+        if (!on)
+            schedulePreview();
+    });
+
+    m_nextDamageAction = new QAction(tr("Select &Next Damaged MCU"), this);
+    m_nextDamageAction->setShortcut(QKeySequence(Qt::Key_F3));
+    m_nextDamageAction->setToolTip(tr("Moves the selection to the next MCU, in scan order, that "
+                                      "either failed to decode or disagrees with its neighbors far "
+                                      "more than the picture's own detail explains."));
+    connect(m_nextDamageAction, &QAction::triggered, this, &MainWindow::onNextDamage);
+
+    QSettings settings;
+    m_reportAction = new QAction(tr("Write a Recovery &Report With Each Export"), this);
+    m_reportAction->setCheckable(true);
+    m_reportAction->setChecked(settings.value(QStringLiteral("export/report"), false).toBool());
+    m_reportAction->setToolTip(tr("Writes <export>.report.json beside the picture: hashes of input "
+                                  "and output, every step, and how many MCUs were moved, adjusted, "
+                                  "synthesized or never recovered."));
+    connect(m_reportAction, &QAction::toggled, this, [](bool on) {
+        QSettings().setValue(QStringLiteral("export/report"), on);
+    });
+    m_thumbnailAction = new QAction(tr("Refresh the Exif &Thumbnail on Export"), this);
+    m_thumbnailAction->setCheckable(true);
+    m_thumbnailAction->setChecked(settings.value(QStringLiteral("export/thumbnail"), true).toBool());
+    m_thumbnailAction->setToolTip(tr("The embedded thumbnail shows the picture as it was before the "
+                                     "repair. Replace it with one of the repaired picture."));
+    connect(m_thumbnailAction, &QAction::toggled, this, [](bool on) {
+        QSettings().setValue(QStringLiteral("export/thumbnail"), on);
+    });
+    m_trailerAction = new QAction(tr("Keep Data After the Image on Export"), this);
+    m_trailerAction->setCheckable(true);
+    m_trailerAction->setChecked(settings.value(QStringLiteral("export/trailer"), true).toBool());
+    m_trailerAction->setToolTip(tr("Carry an MPF preview or a motion photo's video along with the "
+                                   "repaired picture. A ransomware footer is never carried."));
+    connect(m_trailerAction, &QAction::toggled, this, [](bool on) {
+        QSettings().setValue(QStringLiteral("export/trailer"), on);
+    });
 }
 
 void MainWindow::buildUi()
@@ -213,6 +273,12 @@ void MainWindow::buildUi()
     fileMenu->addSeparator();
     fileMenu->addAction(m_exportAction);
     fileMenu->addAction(m_exportAsAction);
+    QAction *writeReport = fileMenu->addAction(tr("Write Recovery Report…"));
+    connect(writeReport, &QAction::triggered, this, &MainWindow::onWriteReport);
+    QMenu *exportOptions = fileMenu->addMenu(tr("Export &Options"));
+    exportOptions->addAction(m_reportAction);
+    exportOptions->addAction(m_thumbnailAction);
+    exportOptions->addAction(m_trailerAction);
     fileMenu->addSeparator();
     QAction *quit = fileMenu->addAction(tr("&Quit"));
     quit->setShortcut(QKeySequence::Quit);
@@ -241,6 +307,68 @@ void MainWindow::buildUi()
     viewMenu->addSeparator();
     viewMenu->addAction(m_gridAction);
     viewMenu->addAction(m_selectionOverlayAction);
+    viewMenu->addAction(m_compareAction);
+    viewMenu->addSeparator();
+    m_overlayGroup = new QActionGroup(this);
+    const struct {
+        const char *text;
+        Overlay overlay;
+        QKeySequence key;
+    } overlays[] = {
+        {QT_TR_NOOP("No Overlay"), Overlay::None, QKeySequence()},
+        {QT_TR_NOOP("Overlay &Damage Map"), Overlay::Damage, QKeySequence(Qt::CTRL | Qt::Key_D)},
+        {QT_TR_NOOP("Overlay &Provenance"), Overlay::Provenance, QKeySequence(Qt::CTRL | Qt::Key_P)},
+    };
+    for (const auto &o : overlays) {
+        QAction *a = viewMenu->addAction(tr(o.text));
+        a->setCheckable(true);
+        a->setShortcut(o.key);
+        a->setChecked(o.overlay == Overlay::None);
+        m_overlayGroup->addAction(a);
+        const Overlay which = o.overlay;
+        connect(a, &QAction::triggered, this, [this, which] {
+            m_overlay = which;
+            refreshOverlay();
+        });
+    }
+    viewMenu->actions().last()->setToolTip(
+        tr("Colors each MCU by what the recipe did to it: blue moved, yellow DC-adjusted, magenta "
+           "pasted or synthesized, red no recovered data."));
+
+    QMenu *toolsMenu = menuBar()->addMenu(tr("&Tools"));
+    toolsMenu->addAction(m_nextDamageAction);
+    QAction *align = toolsMenu->addAction(tr("&Align Stream at Selection…"));
+    align->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_L));
+    connect(align, &QAction::triggered, this, &MainWindow::onAutoAlign);
+    QAction *autoDc = toolsMenu->addAction(tr("&Estimate DC Offset for Scope"));
+    autoDc->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_E));
+    connect(autoDc, &QAction::triggered, this, &MainWindow::onAutoDc);
+    toolsMenu->addSeparator();
+    const auto shiftAction = [this, toolsMenu](const QString &text, const QKeySequence &key,
+                                               int mcus, int units) {
+        QAction *a = toolsMenu->addAction(text);
+        a->setShortcut(key);
+        connect(a, &QAction::triggered, this, [this, mcus, units] { nudgeShift(mcus, units); });
+    };
+    shiftAction(tr("Preview Inserting One MCU"), QKeySequence(Qt::Key_BracketLeft), 1, 0);
+    shiftAction(tr("Preview Deleting One MCU"), QKeySequence(Qt::Key_BracketRight), -1, 0);
+    shiftAction(tr("Preview Inserting One Block"), QKeySequence(Qt::Key_BraceLeft), 0, 1);
+    shiftAction(tr("Preview Deleting One Block"), QKeySequence(Qt::Key_BraceRight), 0, -1);
+    QAction *commitShiftAction = toolsMenu->addAction(tr("Commit Previewed Shift"));
+    commitShiftAction->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_Return));
+    connect(commitShiftAction, &QAction::triggered, this, &MainWindow::commitShift);
+    QAction *cancelShiftAction = toolsMenu->addAction(tr("Cancel Previewed Shift"));
+    cancelShiftAction->setShortcut(QKeySequence(Qt::Key_Escape));
+    connect(cancelShiftAction, &QAction::triggered, this, &MainWindow::cancelShift);
+    toolsMenu->addSeparator();
+    QAction *embedded = toolsMenu->addAction(tr("&Pictures Inside This File…"));
+    connect(embedded, &QAction::triggered, this, &MainWindow::onEmbeddedImages);
+    QAction *batch = toolsMenu->addAction(tr("&Triage a Folder…"));
+    connect(batch, &QAction::triggered, this, &MainWindow::onBatchTriage);
+    QAction *carve = toolsMenu->addAction(tr("&Carve JPEGs out of a File…"));
+    carve->setToolTip(tr("Finds every complete JPEG inside any file: a disk image, a camera RAW "
+                         "file (whose full-size preview is a JPEG), a backup archive."));
+    connect(carve, &QAction::triggered, this, &MainWindow::onCarve);
 
     // --- toolbar -----------------------------------------------------------
     QToolBar *toolbar = addToolBar(tr("Main"));
@@ -288,6 +416,26 @@ void MainWindow::buildUi()
     logDock->setWidget(m_log);
     addDockWidget(Qt::BottomDockWidgetArea, logDock);
     logDock->hide(); // available from the View menu, but out of the way by default
+
+    QDockWidget *analysisDock = new QDockWidget(tr("Analysis"), this);
+    analysisDock->setAllowedAreas(Qt::AllDockWidgetAreas);
+    m_analysisDock = new AnalysisDock(analysisDock);
+    analysisDock->setWidget(m_analysisDock);
+    addDockWidget(Qt::RightDockWidgetArea, analysisDock);
+    tabifyDockWidget(controlDock, analysisDock);
+    controlDock->raise();
+    QAction *analysisAction = viewMenu->addAction(tr("Show &Analysis"));
+    analysisAction->setCheckable(true);
+    analysisAction->setChecked(true);
+    connect(analysisAction, &QAction::toggled, analysisDock, &QWidget::setVisible);
+    connect(analysisDock, &QDockWidget::visibilityChanged, analysisAction, &QAction::setChecked);
+    connect(m_analysisDock, &AnalysisDock::byteEditsRequested, this, &MainWindow::onByteEdits);
+    connect(m_analysisDock, &AnalysisDock::baseMcuRequested, this, &MainWindow::onBaseMcuRequested);
+    connect(m_analysisDock, &AnalysisDock::mapChanged, this, [this] {
+        m_damage = analysis::DamageMap{};
+        if (m_overlay == Overlay::Damage)
+            refreshOverlay();
+    });
     QAction *logAction = viewMenu->addAction(tr("Show &Log"));
     logAction->setCheckable(true);
     connect(logAction, &QAction::toggled, logDock, &QWidget::setVisible);
@@ -324,7 +472,8 @@ QWidget *MainWindow::buildStepPanel()
 
     QLabel *hint = new QLabel(tr("Every repair is replayed from the original file in one pass. "
                                  "Untick a step to see the image without it; use Up and Down to "
-                                 "reorder (insert and delete do not commute, so order matters)."),
+                                 "reorder (insert and delete do not commute, so order matters). "
+                                 "Byte edits always run first."),
                               panel);
     hint->setWordWrap(true);
     hint->setEnabled(false);
@@ -410,7 +559,7 @@ QGroupBox *MainWindow::buildSelectionGroup()
     layout->addLayout(buttons);
 
     QLabel *hint = new QLabel(
-        tr("Drag to select a run of blocks in scan order; Shift+click extends it."), box);
+        tr("Drag to select a run of MCUs in scan order; Shift+click extends it."), box);
     hint->setWordWrap(true);
     hint->setEnabled(false);
     layout->addWidget(hint);
@@ -425,12 +574,16 @@ QGroupBox *MainWindow::buildColorGroup()
 
     QFormLayout *scopeForm = new QFormLayout;
     m_scopeCombo = new QComboBox(box);
-    m_scopeCombo->addItem(tr("Selected blocks only"));
+    m_scopeCombo->addItem(tr("Selected MCUs only"));
     m_scopeCombo->addItem(tr("Selection to end of image"));
+    m_scopeCombo->addItem(tr("Selection to next restart marker"));
     m_scopeCombo->addItem(tr("Whole image"));
     m_scopeCombo->setToolTip(
-        tr("Which blocks the correction touches. Every option edits DCT coefficients "
-           "directly, so blocks outside the scope decode exactly as they did before."));
+        tr("Which MCUs the correction touches. Every option edits DCT coefficients "
+           "directly, so MCUs outside the scope decode exactly as they did before.\n\n"
+           "A DC error left by a desync persists only until the next restart marker, where "
+           "the encoder reset its predictors -- so in a file with restart markers that is "
+           "where a DC correction should stop."));
     connect(m_scopeCombo, &QComboBox::currentIndexChanged, this, &MainWindow::onScopeChanged);
     scopeForm->addRow(tr("Scope:"), m_scopeCombo);
     layout->addLayout(scopeForm);
@@ -474,13 +627,20 @@ QGroupBox *MainWindow::buildColorGroup()
     applyRow->addWidget(m_resetDeltasButton);
     layout->addLayout(applyRow);
 
+    QPushButton *estimate = new QPushButton(tr("Estimate from surroundings"), box);
+    estimate->setToolTip(tr("Measures the step in each channel across the edge of the scope, "
+                            "where it borders MCUs outside it, and sets the deltas that remove "
+                            "it. Works best when the scope starts where the damage starts."));
+    connect(estimate, &QPushButton::clicked, this, &MainWindow::onAutoDc);
+    layout->addWidget(estimate);
+
     QFrame *rule = new QFrame(box);
     rule->setFrameShape(QFrame::HLine);
     rule->setFrameShadow(QFrame::Sunken);
     layout->addWidget(rule);
 
     QLabel *matchHint = new QLabel(
-        tr("Match a damaged block to good color showing the same content (a block of this "
+        tr("Match a damaged MCU to good color showing the same content (an MCU of this "
            "image, or a patch of another copy of the photograph):"), box);
     matchHint->setWordWrap(true);
     layout->addWidget(matchHint);
@@ -533,9 +693,11 @@ QGroupBox *MainWindow::buildColorGroup()
     rule2->setFrameShadow(QFrame::Sunken);
     layout->addWidget(rule2);
 
-    QPushButton *autoColor = new QPushButton(tr("Auto color (white balance + clarity)"), box);
-    autoColor->setToolTip(tr("A pixel-domain correction, so unlike everything else here it "
-                              "re-encodes the whole image."));
+    QPushButton *autoColor = new QPushButton(tr("Auto color (levels + midtone contrast)"), box);
+    autoColor->setToolTip(tr("A per-channel levels stretch and a midtone contrast curve. It works "
+                             "on pixels, so unlike everything else here it re-quantizes every "
+                             "MCU -- with this file's own tables and sampling, so the MCU grid and "
+                             "every later step stay where they are."));
     connect(autoColor, &QPushButton::clicked, this, &MainWindow::onAutoColor);
     layout->addWidget(autoColor);
 
@@ -544,11 +706,13 @@ QGroupBox *MainWindow::buildColorGroup()
 
 QGroupBox *MainWindow::buildBlockGroup()
 {
-    QGroupBox *box = new QGroupBox(tr("Block operations"));
+    QGroupBox *box = new QGroupBox(tr("MCU operations"));
     QVBoxLayout *layout = new QVBoxLayout(box);
 
-    QLabel *hint = new QLabel(tr("Insert and delete reshuffle the entropy-coded stream from "
-                                 "the first selected block to the end of the image."),
+    QLabel *hint = new QLabel(tr("Insert and delete shift every MCU from the first selected one "
+                                 "to the end of the image, in the order the file codes them. "
+                                 "[ and ] preview one MCU at a time, { and } one block; "
+                                 "Ctrl+Enter commits, Esc cancels."),
                               box);
     hint->setWordWrap(true);
     hint->setEnabled(false);
@@ -560,20 +724,51 @@ QGroupBox *MainWindow::buildBlockGroup()
     m_blockCountSpin->setValue(1);
     QPushButton *insert = new QPushButton(tr("Insert"), box);
     QPushButton *remove = new QPushButton(tr("Delete"), box);
-    connect(insert, &QPushButton::clicked, this, &MainWindow::onInsertBlocks);
-    connect(remove, &QPushButton::clicked, this, &MainWindow::onDeleteBlocks);
-    countRow->addWidget(new QLabel(tr("Blocks:"), box));
+    connect(insert, &QPushButton::clicked, this, &MainWindow::onInsertMcus);
+    connect(remove, &QPushButton::clicked, this, &MainWindow::onDeleteMcus);
+    countRow->addWidget(new QLabel(tr("MCUs:"), box));
     countRow->addWidget(m_blockCountSpin);
     countRow->addWidget(insert);
     countRow->addWidget(remove);
     layout->addLayout(countRow);
+
+    // A stream that lost part of an MCU is out of step by single 8x8 blocks:
+    // luma against chroma, which no whole-MCU shift can put back.
+    QHBoxLayout *unitRow = new QHBoxLayout;
+    m_unitCombo = new QComboBox(box);
+    m_unitCombo->setToolTip(tr("Which 8x8 block of the first selected MCU the shift starts at, "
+                               "in coding order."));
+    m_unitCountSpin = new QSpinBox(box);
+    m_unitCountSpin->setRange(1, 100000);
+    QPushButton *unitInsert = new QPushButton(tr("Insert"), box);
+    QPushButton *unitDelete = new QPushButton(tr("Delete"), box);
+    connect(unitInsert, &QPushButton::clicked, this, &MainWindow::onInsertUnits);
+    connect(unitDelete, &QPushButton::clicked, this, &MainWindow::onDeleteUnits);
+    unitRow->addWidget(new QLabel(tr("Blocks from"), box));
+    unitRow->addWidget(m_unitCombo);
+    unitRow->addWidget(m_unitCountSpin);
+    unitRow->addWidget(unitInsert);
+    unitRow->addWidget(unitDelete);
+    layout->addLayout(unitRow);
+
+    QPushButton *align = new QPushButton(tr("Find the alignment…"), box);
+    align->setToolTip(tr("Tries every shift of the stream at the first selected MCU and ranks them "
+                         "by how well the content below continues the content above."));
+    connect(align, &QPushButton::clicked, this, &MainWindow::onAutoAlign);
+    layout->addWidget(align);
+
+    m_shiftLabel = new QLabel(box);
+    m_shiftLabel->setWordWrap(true);
+    m_shiftLabel->setStyleSheet(warningTextStyle());
+    m_shiftLabel->hide();
+    layout->addWidget(m_shiftLabel);
 
     QFrame *clipLine = new QFrame(box);
     clipLine->setFrameShape(QFrame::HLine);
     clipLine->setFrameShadow(QFrame::Sunken);
     layout->addWidget(clipLine);
 
-    QLabel *clipHint = new QLabel(tr("Copy lifts the selected blocks; paste puts them back at "
+    QLabel *clipHint = new QLabel(tr("Copy lifts the selected MCUs; paste puts them back at "
                                      "the selection. Over writes on top of what is there, "
                                      "Inserting pushes the rest of the image along first."),
                                   box);
@@ -619,7 +814,7 @@ QGroupBox *MainWindow::buildBlockGroup()
     m_copyColSpin = new QSpinBox(box);
     m_copyColSpin->setRange(-10000, 10000);
     QPushButton *copy = new QPushButton(tr("Copy into selection"), box);
-    copy->setToolTip(tr("Replaces each selected block with the block this many MCUs away."));
+    copy->setToolTip(tr("Replaces each selected MCU with the MCU this many rows and columns away."));
     connect(copy, &QPushButton::clicked, this, &MainWindow::onCopyBlocks);
     copyRow->addWidget(new QLabel(tr("ΔRow:"), box));
     copyRow->addWidget(m_copyRowSpin);
@@ -696,13 +891,23 @@ bool MainWindow::openFile(const QString &path)
     finishOpen();
 
     const jr::Info &info = m_doc.info();
-    log(tr("Opened %1 (%2x%3, %4x%5 MCU grid%6).")
+    log(tr("Opened %1 (%2x%3, %4, %5x%6 MCU grid%7).")
             .arg(QFileInfo(path).fileName())
             .arg(info.width)
             .arg(info.height)
+            .arg(info.samplingName())
             .arg(info.mcusX)
             .arg(info.mcusY)
             .arg(info.progressive ? tr(", progressive") : QString()));
+    if (!info.interleavedSingleScan()) {
+        log(tr("This file spreads its data over %n scan(s). Damage spreads scan by scan rather "
+               "than in MCU order here, so insert and delete fix it only when every scan was "
+               "affected the same way. The Scans tab of the Analysis panel lists them; dropping "
+               "the damaged late scans is often the cleaner fix.",
+               nullptr, info.scanCount));
+    }
+    if (m_doc.trailer().present())
+        log(tr("After the image: %1.").arg(m_doc.trailer().describe()));
 
     reportTrimmedScan(path);
     return true;
@@ -882,6 +1087,7 @@ bool MainWindow::runDonorDialog(const QString &path, const QByteArray &broken)
         showError(tr("Could not open image"), error);
         return false;
     }
+    m_donorOptions = dialog.spliceOptions();
 
     finishOpen();
 
@@ -894,8 +1100,8 @@ bool MainWindow::runDonorDialog(const QString &path, const QByteArray &broken)
             .arg(info.mcusY)
             .arg(dialog.spliceOffset())
             .arg(dialog.carriedExif() ? tr(", keeping the damaged file's own Exif") : QString()));
-    log(tr("The picture is very likely shifted: use Insert and Delete blocks to slide the "
-           "stream into place, and export when it looks right."));
+    log(tr("The picture is very likely shifted: use Find the alignment, or insert and delete "
+           "MCUs, to slide the stream into place, and export when it looks right."));
     // A transplanted header does not mend the scan behind it, which may well be
     // cut short too.
     reportTrimmedScan(path);
@@ -936,11 +1142,14 @@ project::Project MainWindow::currentProject() const
     project::Project stored;
     stored.sourcePath = m_doc.filePath();
     stored.sourceBytes = QFileInfo(m_doc.filePath()).size();
+    stored.sourceSha256 = m_doc.sourceSha256();
     stored.salvageMode = m_doc.salvageMode();
     if (!m_doc.donorPath().isEmpty())
-        stored.donor = project::Donor{m_doc.donorPath(), m_doc.donorSpliceOffset()};
+        stored.donor = project::Donor{m_doc.donorPath(), m_doc.donorSpliceOffset(), m_donorOptions};
     stored.exportPath = m_exportPath;
     stored.steps = m_doc.steps();
+    stored.history = m_doc.history();
+    stored.historyIndex = m_doc.historyIndex();
     return stored;
 }
 
@@ -1035,7 +1244,7 @@ bool MainWindow::openProject(const QString &projectPath)
 
         const donor::Layout layout = donor::scan(donorBytes);
         auto spliced = donor::splice(donorBytes, layout, broken, stored->donor->spliceOffset,
-                                     &error);
+                                     &error, stored->donor->options);
         if (!spliced) {
             showError(tr("Could not rebuild the donor header"),
                       tr("%1 was opened with a header borrowed from %2, and that header can no "
@@ -1057,10 +1266,17 @@ bool MainWindow::openProject(const QString &projectPath)
     finishOpen(false);
     m_projectPath = projectPath;
     m_exportPath = stored->exportPath;
+    m_donorOptions = stored->donor ? stored->donor->options : donor::SpliceOptions{};
 
     log(tr("Resumed the repair of %1 from %2.")
             .arg(sourceInfo.fileName(), QFileInfo(projectPath).fileName()));
-    if (stored->sourceBytes > 0 && stored->sourceBytes != sourceInfo.size()) {
+    if (!stored->sourceSha256.isEmpty() && !m_doc.sourceSha256().isEmpty()
+        && stored->sourceSha256 != m_doc.sourceSha256()) {
+        log(tr("Careful: %1 is not the file this repair was made on (its SHA-256 differs). The "
+               "steps were worked out against different bytes.")
+                .arg(sourceInfo.fileName()));
+    } else if (stored->sourceSha256.isEmpty() && stored->sourceBytes > 0
+               && stored->sourceBytes != sourceInfo.size()) {
         log(tr("Careful: %1 is %2 byte(s) now and was %3 when the repair was made. The steps "
                "were worked out against different bytes.")
                 .arg(sourceInfo.fileName())
@@ -1070,7 +1286,8 @@ bool MainWindow::openProject(const QString &projectPath)
 
     if (!stored->steps.isEmpty()) {
         QApplication::setOverrideCursor(Qt::WaitCursor);
-        const bool replayed = m_doc.adoptSteps(stored->steps, &error);
+        const bool replayed =
+            m_doc.adoptSteps(stored->steps, &error, stored->history, stored->historyIndex);
         QApplication::restoreOverrideCursor();
 
         if (!replayed) {
@@ -1110,13 +1327,32 @@ void MainWindow::onExport()
         onExportAs();
         return;
     }
+    doExport(m_exportPath);
+}
+
+bool MainWindow::doExport(const QString &path)
+{
     QString error;
-    if (!m_doc.exportTo(m_exportPath, &error)) {
+    ImageDocument::ExportOptions options;
+    options.refreshThumbnail = m_thumbnailAction->isChecked();
+    options.keepTrailer = m_trailerAction->isChecked();
+    if (!m_doc.exportTo(path, &error, options)) {
         showError(tr("Could not export"), error);
-        return;
+        return false;
     }
-    log(tr("Exported %1.").arg(m_exportPath));
+    log(tr("Exported %1.").arg(path));
+    if (m_reportAction->isChecked()) {
+        QFile written(path);
+        if (written.open(QIODevice::ReadOnly)) {
+            const QJsonObject r = report::build(m_doc, path, written.readAll());
+            if (report::writeBeside(path, r, &error))
+                log(tr("Wrote the recovery report beside it."));
+            else
+                log(tr("Could not write the recovery report: %1").arg(error));
+        }
+    }
     updateWindowTitle();
+    return true;
 }
 
 void MainWindow::onExportAs()
@@ -1127,28 +1363,55 @@ void MainWindow::onExportAs()
     QString suggestion = m_exportPath;
     if (suggestion.isEmpty()) {
         const QFileInfo source(m_doc.filePath());
-        suggestion = source.dir().filePath(source.completeBaseName() + QStringLiteral("_repaired.")
-                                           + (source.suffix().isEmpty()
-                                                  ? QStringLiteral("jpg")
-                                                  : source.suffix()));
+        // Ransomware appends its own extension (photo.jpg.xyzw); the export
+        // should be a .jpg whatever the damaged file is called.
+        QString base = source.completeBaseName();
+        const qsizetype jpg = base.lastIndexOf(QStringLiteral(".jp"), -1, Qt::CaseInsensitive);
+        if (jpg > 0)
+            base = base.left(jpg);
+        suggestion = source.dir().filePath(base + QStringLiteral("_repaired.jpg"));
     }
 
     const QString path = QFileDialog::getSaveFileName(this, tr("Export repaired JPEG"), suggestion,
                                                       tr("JPEG images (*.jpg *.jpeg)"));
     if (path.isEmpty())
         return;
-
-    QString error;
-    if (!m_doc.exportTo(path, &error)) {
-        showError(tr("Could not export"), error);
+    if (!doExport(path))
         return;
-    }
     m_exportPath = path;
-    log(tr("Exported %1.").arg(path));
     // Where the export went is part of the session: reopening the project and
     // pressing Export should go on writing to the same file.
     saveProject();
     updateWindowTitle();
+}
+
+void MainWindow::onWriteReport()
+{
+    if (!requireImage())
+        return;
+    QString error;
+    const auto bytes = m_doc.exportBytes(&error);
+    if (!bytes) {
+        showError(tr("Could not build the report"), error);
+        return;
+    }
+    const QString target = m_exportPath.isEmpty() ? m_doc.filePath() + QStringLiteral(".repaired.jpg")
+                                                  : m_exportPath;
+    const QJsonObject r = report::build(m_doc, target, *bytes);
+    const QString path = QFileDialog::getSaveFileName(
+        this, tr("Write recovery report"), target + QStringLiteral(".report.txt"),
+        tr("Text (*.txt);;JSON (*.json)"));
+    if (path.isEmpty())
+        return;
+    QSaveFile f(path);
+    const QByteArray out = path.endsWith(QLatin1String(".json"), Qt::CaseInsensitive)
+        ? QJsonDocument(r).toJson(QJsonDocument::Indented)
+        : report::toText(r).toUtf8();
+    if (!f.open(QIODevice::WriteOnly) || f.write(out) != out.size() || !f.commit()) {
+        showError(tr("Could not write the report"), f.errorString());
+        return;
+    }
+    log(tr("Wrote %1.").arg(path));
 }
 
 void MainWindow::changeEvent(QEvent *event)
@@ -1371,8 +1634,15 @@ void MainWindow::refreshStepList()
 
 void MainWindow::onSelectionChanged()
 {
+    // A live shift belongs to where it was started.
+    if (m_pendingMcuShift || m_pendingUnitShift)
+        cancelShift();
     updateSelectionInfo();
     updateActionStates();
+    if (m_hoverIndex < 0) {
+        int row = 0, col = 0;
+        m_analysisDock->setCurrentMcu(m_grid->anchorBlock(&row, &col) ? row * m_doc.info().mcusX + col : -1);
+    }
     // The selection defines the scope, so a pending correction now covers
     // different blocks.
     schedulePreview();
@@ -1382,8 +1652,14 @@ void MainWindow::onBlockHovered(int row, int col)
 {
     if (row < 0 || !m_doc.isOpen()) {
         m_hoverLabel->clear();
+        m_hoverIndex = -1;
+        int r = 0, c = 0;
+        if (m_doc.isOpen())
+            m_analysisDock->setCurrentMcu(m_grid->anchorBlock(&r, &c) ? r * m_doc.info().mcusX + c : -1);
         return;
     }
+    m_hoverIndex = row * m_doc.info().mcusX + col;
+    m_analysisDock->setCurrentMcu(m_hoverIndex);
 
     const QRect rect = colormath::mcuRect(m_doc.info(), row, col);
     QString text = tr("MCU row %1, col %2   ·   pixels (%3, %4)–(%5, %6)")
@@ -1397,6 +1673,8 @@ void MainWindow::onBlockHovered(int row, int col)
     const colormath::BlockStats stats = colormath::measure(m_doc.ycbcr(), rect);
     if (stats.isValid())
         text += QStringLiteral("   ·   ") + formatTriple(stats.mean);
+    if (m_damage.isValid() && m_hoverIndex < m_damage.score.size() && m_damage.score[m_hoverIndex] >= 0.5f)
+        text += tr("   ·   looks damaged");
     m_hoverLabel->setText(text);
 }
 
@@ -1408,7 +1686,7 @@ void MainWindow::onBlockPicked(McuGridItem::PickMode mode, int row, int col)
     const colormath::BlockStats stats =
         colormath::measure(m_doc.ycbcr(), colormath::mcuRect(m_doc.info(), row, col));
     if (!stats.isValid()) {
-        log(tr("Could not measure that block."));
+        log(tr("Could not measure that MCU."));
         return;
     }
 
@@ -1446,6 +1724,16 @@ jr::Scope MainWindow::currentScope() const
         m_grid->anchorBlock(&row, &col);
         return jr::Scope::runFrom(row, col);
     }
+    case ScopeChoice::SelectionToRestart: {
+        int row = 0, col = 0;
+        m_grid->anchorBlock(&row, &col);
+        const int ri = info.restartInterval;
+        if (ri <= 0)
+            return jr::Scope::runFrom(row, col);
+        const int start = row * info.mcusX + col;
+        const int end = (start / ri + 1) * ri; // the first MCU after the next restart
+        return jr::Scope::runFrom(row, col, end - start);
+    }
     case ScopeChoice::WholeImage:
     default:
         return jr::Scope::wholeImage();
@@ -1461,13 +1749,17 @@ QByteArray MainWindow::currentScopeMask() const
     switch (scopeChoice()) {
     case ScopeChoice::SelectedBlocks:
         return m_grid->selectionMask();
-    case ScopeChoice::SelectionToEnd: {
+    case ScopeChoice::SelectionToEnd:
+    case ScopeChoice::SelectionToRestart: {
         int row = 0, col = 0;
         if (!m_grid->anchorBlock(&row, &col))
             return QByteArray();
         QByteArray mask(qsizetype(info.mcusY) * info.mcusX, '\0');
         const qsizetype from = qsizetype(row) * info.mcusX + col;
-        for (qsizetype i = from; i < mask.size(); ++i)
+        qsizetype to = mask.size();
+        if (scopeChoice() == ScopeChoice::SelectionToRestart && info.restartInterval > 0)
+            to = qMin(to, (from / info.restartInterval + 1) * info.restartInterval);
+        for (qsizetype i = from; i < to; ++i)
             mask[i] = 1;
         return mask;
     }
@@ -1480,6 +1772,84 @@ QByteArray MainWindow::currentScopeMask() const
 int MainWindow::deltaFor(int component) const
 {
     return m_spins[component] ? m_spins[component]->value() : 0;
+}
+
+QVector<jr::Op> MainWindow::pendingShiftOps() const
+{
+    QVector<jr::Op> ops;
+    int row = 0, col = 0;
+    if (!m_doc.isOpen() || !m_grid->anchorBlock(&row, &col))
+        return ops;
+    const int unit = m_unitCombo ? qMax(0, m_unitCombo->currentIndex()) : 0;
+    if (m_pendingUnitShift > 0)
+        ops.append(jr::Op::insertUnits(m_pendingUnitShift, row, col, unit));
+    else if (m_pendingUnitShift < 0)
+        ops.append(jr::Op::deleteUnits(-m_pendingUnitShift, row, col, unit));
+    if (m_pendingMcuShift > 0)
+        ops.append(jr::Op::insertMcus(m_pendingMcuShift, jr::Scope::runFrom(row, col)));
+    else if (m_pendingMcuShift < 0)
+        ops.append(jr::Op::deleteMcus(-m_pendingMcuShift, jr::Scope::runFrom(row, col)));
+    return ops;
+}
+
+QVector<jr::Op> MainWindow::pendingOps() const
+{
+    return pendingShiftOps() + pendingColorOps();
+}
+
+bool MainWindow::hasPendingEdit() const
+{
+    return hasPendingColorEdit() || ((m_pendingMcuShift || m_pendingUnitShift) && m_grid->hasSelection());
+}
+
+void MainWindow::nudgeShift(int mcus, int units)
+{
+    if (!m_doc.isOpen() || !requireSelection())
+        return;
+    m_pendingMcuShift += mcus;
+    m_pendingUnitShift += units;
+    const QString mcuText = m_pendingMcuShift > 0 ? tr("insert %n MCU(s)", nullptr, m_pendingMcuShift)
+        : m_pendingMcuShift < 0                    ? tr("delete %n MCU(s)", nullptr, -m_pendingMcuShift)
+                                                   : QString();
+    const QString unitText = m_pendingUnitShift > 0 ? tr("insert %n block(s)", nullptr, m_pendingUnitShift)
+        : m_pendingUnitShift < 0                     ? tr("delete %n block(s)", nullptr, -m_pendingUnitShift)
+                                                     : QString();
+    QStringList parts;
+    if (!unitText.isEmpty())
+        parts << unitText;
+    if (!mcuText.isEmpty())
+        parts << mcuText;
+    if (parts.isEmpty()) {
+        cancelShift();
+        return;
+    }
+    m_shiftLabel->setProperty("what", parts.join(QStringLiteral(", ")));
+    m_shiftLabel->setText(tr("Previewing: %1. Ctrl+Enter commits, Esc cancels.")
+                              .arg(parts.join(QStringLiteral(", "))));
+    m_shiftLabel->show();
+    schedulePreview();
+}
+
+void MainWindow::commitShift()
+{
+    const QVector<jr::Op> ops = pendingShiftOps();
+    if (ops.isEmpty())
+        return;
+    int row = 0, col = 0;
+    m_grid->anchorBlock(&row, &col);
+    const QString what = m_shiftLabel->property("what").toString();
+    m_pendingMcuShift = m_pendingUnitShift = 0;
+    m_shiftLabel->hide();
+    commit(ops, tr("Shifted at row %1, col %2: %3.").arg(row).arg(col).arg(what));
+}
+
+void MainWindow::cancelShift()
+{
+    if (!m_pendingMcuShift && !m_pendingUnitShift)
+        return;
+    m_pendingMcuShift = m_pendingUnitShift = 0;
+    m_shiftLabel->hide();
+    schedulePreview();
 }
 
 bool MainWindow::hasPendingColorEdit() const
@@ -1641,16 +2011,16 @@ void MainWindow::onAutoColor()
 
     const auto choice = QMessageBox::question(
         this, tr("Re-encode the image?"),
-        tr("Auto color works on pixels, not DCT coefficients, so applying it re-encodes "
-           "the whole image and loses a generation of quality.\n\n"
+        tr("Auto color works on pixels, not DCT coefficients, so applying it re-quantizes every "
+           "MCU of the image -- with this file's own quantization tables and sampling, so the "
+           "grid and the steps after it stay put, but it is a generation of loss all the same.\n\n"
            "Every other repair here is lossless. Continue?"),
         QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
     if (choice != QMessageBox::Yes)
         return;
 
     const QString description =
-        tr("Auto color (white balance + clarity), re-encoded at quality %1")
-            .arg(autocolor::kQuality);
+        tr("Auto color (levels + midtone contrast), re-quantized with this file's tables");
 
     QApplication::setOverrideCursor(Qt::WaitCursor);
     QString error;
@@ -1672,26 +2042,56 @@ void MainWindow::onAutoColor()
 // Block operations
 // ---------------------------------------------------------------------------
 
-void MainWindow::onInsertBlocks()
+void MainWindow::onInsertMcus()
 {
     if (!requireImage() || !requireSelection())
         return;
     int row = 0, col = 0;
     m_grid->anchorBlock(&row, &col);
     const int n = m_blockCountSpin->value();
-    commit({jr::Op::insertBlocks(n, jr::Scope::runFrom(row, col))},
-           tr("Inserted %1 block(s) at row %2, col %3.").arg(n).arg(row).arg(col));
+    commit({jr::Op::insertMcus(n, jr::Scope::runFrom(row, col))},
+           tr("Inserted %n MCU(s) at row %1, col %2.", nullptr, n).arg(row).arg(col));
 }
 
-void MainWindow::onDeleteBlocks()
+void MainWindow::onDeleteMcus()
 {
     if (!requireImage() || !requireSelection())
         return;
     int row = 0, col = 0;
     m_grid->anchorBlock(&row, &col);
     const int n = m_blockCountSpin->value();
-    commit({jr::Op::deleteBlocks(n, jr::Scope::runFrom(row, col))},
-           tr("Deleted %1 block(s) at row %2, col %3.").arg(n).arg(row).arg(col));
+    commit({jr::Op::deleteMcus(n, jr::Scope::runFrom(row, col))},
+           tr("Deleted %n MCU(s) at row %1, col %2.", nullptr, n).arg(row).arg(col));
+}
+
+void MainWindow::onInsertUnits()
+{
+    if (!requireImage() || !requireSelection())
+        return;
+    int row = 0, col = 0;
+    m_grid->anchorBlock(&row, &col);
+    const int n = m_unitCountSpin->value();
+    const int unit = qMax(0, m_unitCombo->currentIndex());
+    commit({jr::Op::insertUnits(n, row, col, unit)},
+           tr("Inserted %n block(s) before block %1 of row %2, col %3.", nullptr, n)
+               .arg(m_doc.info().unitName(unit))
+               .arg(row)
+               .arg(col));
+}
+
+void MainWindow::onDeleteUnits()
+{
+    if (!requireImage() || !requireSelection())
+        return;
+    int row = 0, col = 0;
+    m_grid->anchorBlock(&row, &col);
+    const int n = m_unitCountSpin->value();
+    const int unit = qMax(0, m_unitCombo->currentIndex());
+    commit({jr::Op::deleteUnits(n, row, col, unit)},
+           tr("Deleted %n block(s) from block %1 of row %2, col %3.", nullptr, n)
+               .arg(m_doc.info().unitName(unit))
+               .arg(row)
+               .arg(col));
 }
 
 void MainWindow::onCopyBlocks()
@@ -1702,11 +2102,11 @@ void MainWindow::onCopyBlocks()
     const int dCol = m_copyColSpin->value();
     if (dRow == 0 && dCol == 0) {
         QMessageBox::information(this, tr("Nothing to copy"),
-                                 tr("A zero offset would copy every block onto itself."));
+                                 tr("A zero offset would copy every MCU onto itself."));
         return;
     }
     commit({jr::Op::copyBlocks(dRow, dCol, currentScope())},
-           tr("Copied blocks from offset row %1, col %2 into the selection.").arg(dRow).arg(dCol));
+           tr("Copied MCUs from offset row %1, col %2 into the selection.").arg(dRow).arg(dCol));
 }
 
 void MainWindow::onCopySelection()
@@ -1718,7 +2118,7 @@ void MainWindow::onCopySelection()
 
     QString error;
     const std::optional<jr::Clipboard> clip =
-        jr::readMcus(m_doc.bytes(), row, col, m_grid->selectedCount(), &error);
+        m_doc.coefs()->readMcus(row, col, m_grid->selectedCount(), &error);
     if (!clip) {
         showError(tr("Copy failed"), error);
         return;
@@ -1728,8 +2128,7 @@ void MainWindow::onCopySelection()
     m_clipboardSource = m_doc.filePath();
     updateClipboardInfo();
     updateActionStates();
-    log(tr("Copied %1 block(s) from row %2, col %3.")
-            .arg(m_clipboard.mcuCount)
+    log(tr("Copied %n MCU(s) from row %1, col %2.", nullptr, m_clipboard.mcuCount)
             .arg(row)
             .arg(col));
 }
@@ -1750,21 +2149,35 @@ void MainWindow::pasteClipboard(bool insert)
         return;
     if (!m_clipboard.fits(m_doc.info())) {
         showError(tr("Cannot paste"),
-                  tr("The clipboard holds blocks from an image with different chroma sampling. "
-                     "Pasting them here would pull the color channels out of step."));
+                  tr("The clipboard holds MCUs from an image with different chroma sampling (%1 "
+                     "here). Pasting them would pull the color channels out of step.")
+                      .arg(m_doc.info().samplingName()));
         return;
     }
-    if (!m_clipboardSource.isEmpty() && m_clipboardSource != m_doc.filePath()) {
+    jr::Clipboard clip = m_clipboard;
+    const QVector<quint16> tables = m_doc.coefs()->quantTables();
+    if (!clip.sameQuantization(tables)) {
         // Coefficients are quantized by the table they were written with, so
-        // the same numbers mean different amounts in another file.
-        const auto choice = QMessageBox::warning(
-            this, tr("Paste from another file"),
-            tr("These blocks were copied from %1. Coefficients carry that file's quantization, "
-               "so unless the two were saved by the same camera at the same quality, the pasted "
-               "area will come out at the wrong brightness or color.")
-                .arg(QFileInfo(m_clipboardSource).fileName()),
-            QMessageBox::Ok | QMessageBox::Cancel, QMessageBox::Cancel);
-        if (choice != QMessageBox::Ok)
+        // the same numbers mean different amounts here. Converting them is
+        // lossy only where this file's steps are coarser.
+        QMessageBox box(this);
+        box.setIcon(QMessageBox::Question);
+        box.setWindowTitle(tr("Paste from another file"));
+        box.setText(tr("These MCUs were copied from %1, which uses different quantization tables.")
+                        .arg(QFileInfo(m_clipboardSource).fileName()));
+        box.setInformativeText(
+            tr("Pasted as they are, the same numbers would mean different amounts here and the area "
+               "would come out at the wrong brightness or color. Converting re-expresses every "
+               "coefficient in this file's tables -- lossy only where this file's steps are coarser "
+               "than the source's."));
+        QPushButton *convert = box.addButton(tr("Convert and Paste"), QMessageBox::AcceptRole);
+        QPushButton *raw = box.addButton(tr("Paste As Is"), QMessageBox::DestructiveRole);
+        box.addButton(QMessageBox::Cancel);
+        box.setDefaultButton(convert);
+        box.exec();
+        if (box.clickedButton() == convert)
+            clip = clip.requantized(tables);
+        else if (box.clickedButton() != raw)
             return;
     }
 
@@ -1772,32 +2185,32 @@ void MainWindow::pasteClipboard(bool insert)
     m_grid->anchorBlock(&row, &col);
     const jr::Info &info = m_doc.info();
     const int room = info.mcuCount() - (row * info.mcusX + col);
-    if (m_clipboard.mcuCount > room) {
+    if (clip.mcuCount > room) {
         QMessageBox::information(this, tr("Not enough room"),
-                                 tr("The clipboard holds %1 block(s) but only %2 fit between "
+                                 tr("The clipboard holds %1 MCU(s) but only %2 fit between "
                                     "here and the end of the image. The overflow will be "
                                     "dropped.")
-                                     .arg(m_clipboard.mcuCount)
+                                     .arg(clip.mcuCount)
                                      .arg(room));
     }
 
     QVector<jr::Op> ops;
     if (insert) {
-        // Open the hole first, then fill it. Insert duplicates blocks at the
+        // Open the hole first, then fill it. Insert duplicates MCUs at the
         // seam; the paste lands on exactly those, so the duplicates never show.
-        ops.push_back(jr::Op::insertBlocks(m_clipboard.mcuCount, jr::Scope::runFrom(row, col)));
+        ops.push_back(jr::Op::insertMcus(clip.mcuCount, jr::Scope::runFrom(row, col)));
     }
-    ops.push_back(jr::Op::paste(row, col, m_clipboard));
+    ops.push_back(jr::Op::paste(row, col, clip));
 
     if (!commit(ops,
                 insert
-                    ? tr("Pasted %1 block(s) at row %2, col %3, pushing the rest of the image "
+                    ? tr("Pasted %1 MCU(s) at row %2, col %3, pushing the rest of the image "
                          "along.")
-                          .arg(m_clipboard.mcuCount)
+                          .arg(clip.mcuCount)
                           .arg(row)
                           .arg(col)
-                    : tr("Pasted %1 block(s) over row %2, col %3.")
-                          .arg(m_clipboard.mcuCount)
+                    : tr("Pasted %1 MCU(s) over row %2, col %3.")
+                          .arg(clip.mcuCount)
                           .arg(row)
                           .arg(col)))
         return;
@@ -1818,18 +2231,18 @@ void MainWindow::onFillFromReference()
     const QByteArray mask = currentScopeMask();
     const fill::Plan plan = fill::planFor(mask, m_doc.info());
     if (!plan.isValid()) {
-        showError(tr("Nothing to fill"), tr("No blocks are in scope."));
+        showError(tr("Nothing to fill"), tr("No MCUs are in scope."));
         return;
     }
 
-    ReferenceFillDialog dialog(m_doc.bytes(), m_doc.info(), m_doc.rgb(), mask,
+    ReferenceFillDialog dialog(m_doc.baseBytes(), m_doc.info(), m_doc.rgb(), mask,
                                QFileInfo(m_doc.filePath()).absolutePath(), this);
     if (dialog.exec() != QDialog::Accepted)
         return;
 
     const QString name = QFileInfo(dialog.referencePath()).fileName();
     const QPoint offset = dialog.offset();
-    QString description = tr("Filled %1 block(s) from %2").arg(dialog.mcuCount()).arg(name);
+    QString description = tr("Filled %1 MCU(s) from %2").arg(dialog.mcuCount()).arg(name);
     if (offset != QPoint(0, 0)) {
         description += tr(", read %1 row(s) and %2 column(s) away")
                            .arg(offset.y())
@@ -1842,7 +2255,7 @@ void MainWindow::onFillFromReference()
 
     // The one step in the list that is not purely a coefficient shuffle, so say
     // what it cost where the rest of the session's arithmetic is recorded.
-    log(tr("Those blocks were compressed with this file's own quantization tables; every block "
+    log(tr("Those MCUs were compressed with this file's own quantization tables; every MCU "
            "outside them keeps its exact coefficients.%1")
             .arg(dialog.wasScaled()
                      ? tr(" The reference was scaled to this file's dimensions on the way in.")
@@ -1855,7 +2268,7 @@ void MainWindow::updateClipboardInfo()
         m_clipboardLabel->setText(tr("Clipboard: empty."));
         return;
     }
-    QString text = tr("Clipboard: %1 block(s) from row %2, col %3")
+    QString text = tr("Clipboard: %1 MCU(s) from row %2, col %3")
                        .arg(m_clipboard.mcuCount)
                        .arg(m_clipboard.srcRow)
                        .arg(m_clipboard.srcCol);
@@ -1890,7 +2303,7 @@ void MainWindow::schedulePreview()
 {
     if (!m_doc.isOpen())
         return;
-    if (!hasPendingColorEdit()) {
+    if (!hasPendingEdit() || m_compareAction->isChecked()) {
         cancelPreview();
         showBaseline();
         return;
@@ -1909,34 +2322,33 @@ void MainWindow::showBaseline()
 {
     if (!m_showingPreview || !m_doc.isOpen())
         return;
-    m_grid->setPixmap(QPixmap::fromImage(m_doc.rgb().toImage()));
+    m_grid->setPixmap(QPixmap::fromImage(
+        (m_compareAction->isChecked() ? m_doc.originalRgb() : m_doc.rgb()).toImage()));
     m_showingPreview = false;
 }
 
 void MainWindow::onPreviewTimeout()
 {
-    const QVector<jr::Op> ops = pendingColorOps();
+    const QVector<jr::Op> ops = pendingOps();
     if (ops.isEmpty()) {
         showBaseline();
         return;
     }
 
     const quint64 generation = ++m_previewGeneration;
-    // Copies, so the worker never reads state the UI thread may be editing.
-    const QByteArray source = m_doc.bytes();
+    // Shared, immutable snapshots: the worker never reads state the UI thread
+    // may be editing, and nothing is copied until the worker writes.
+    const std::shared_ptr<const jr::Coefs> state = m_doc.coefs();
+    const jr::Samples rgb = m_doc.rgb();
 
-    m_previewWatcher->setFuture(QtConcurrent::run([generation, source, ops]() {
+    m_previewWatcher->setFuture(QtConcurrent::run([generation, state, rgb, ops]() {
         PreviewResult result;
         result.generation = generation;
-
-        const auto edited = jr::apply(source, ops, &result.error);
-        if (!edited)
+        // Only the MCU rows the pending edit changes are decoded.
+        auto preview = ImageDocument::preview(state, rgb, ops, &result.error);
+        if (!preview)
             return result;
-        const auto rgb = jr::decodeRgb(*edited, &result.error);
-        if (!rgb)
-            return result;
-
-        result.rgb = *rgb;
+        result.rgb = preview->rgb;
         result.ok = true;
         return result;
     }));
@@ -1964,7 +2376,14 @@ void MainWindow::onPreviewReady()
 
 void MainWindow::loadIntoView()
 {
+    m_compareAction->setChecked(false);
+    m_pendingMcuShift = m_pendingUnitShift = 0;
+    m_shiftLabel->hide();
+    m_damage = analysis::DamageMap{};
     m_grid->setImage(QPixmap::fromImage(m_doc.rgb().toImage()), m_doc.info());
+    m_unitCombo->clear();
+    for (int u = 0; u < m_doc.info().blocksPerMcu; ++u)
+        m_unitCombo->addItem(m_doc.info().unitName(u));
     // The view pads this out into the scrollable scene rect so the image can
     // be dragged freely rather than sitting locked in the middle.
     m_view->setContentRect(m_grid->boundingRect());
@@ -1976,11 +2395,80 @@ void MainWindow::loadIntoView()
     updateSelectionInfo();
     updateMatchInfo();
     updateClipboardInfo();
+    refreshAnalysis();
+    refreshOverlay();
+}
+
+void MainWindow::syncGridGeometry()
+{
+    // A byte edit can change the frame header, and with it the grid.
+    const jr::Info &now = m_doc.info();
+    if (now.mcusX != m_unitCombo->property("mcusX").toInt()
+        || now.mcusY != m_unitCombo->property("mcusY").toInt()
+        || now.blocksPerMcu != m_unitCombo->count()) {
+        m_grid->setImage(QPixmap::fromImage(m_doc.rgb().toImage()), now);
+        m_view->setContentRect(m_grid->boundingRect());
+        m_unitCombo->clear();
+        for (int u = 0; u < now.blocksPerMcu; ++u)
+            m_unitCombo->addItem(now.unitName(u));
+    }
+    m_unitCombo->setProperty("mcusX", now.mcusX);
+    m_unitCombo->setProperty("mcusY", now.mcusY);
+}
+
+void MainWindow::refreshAnalysis()
+{
+    m_analysisDock->setDocument(&m_doc);
+    m_damage = analysis::DamageMap{};
+}
+
+void MainWindow::refreshOverlay()
+{
+    if (!m_doc.isOpen() || m_overlay == Overlay::None) {
+        m_grid->setOverlay(QImage());
+        return;
+    }
+    const jr::Info &info = m_doc.info();
+    QImage img(info.mcusX, info.mcusY, QImage::Format_ARGB32);
+    img.fill(Qt::transparent);
+    if (m_overlay == Overlay::Damage) {
+        if (!m_damage.isValid()) {
+            const QVector<qint32> src = m_doc.unitSources();
+            m_damage = analysis::damage(info, m_doc.ycbcr(), &m_analysisDock->map(), &src);
+        }
+        for (int m = 0; m < m_damage.score.size(); ++m) {
+            const float s = m_damage.score[m];
+            if (s > 0.2f)
+                img.setPixelColor(m % info.mcusX, m / info.mcusX, QColor(255, 40, 40, int(40 + 140 * s)));
+        }
+    } else {
+        const QByteArray flags = m_doc.provenance();
+        for (int m = 0; m < flags.size(); ++m) {
+            const quint8 f = quint8(flags[m]);
+            QColor c;
+            if (f & ImageDocument::kNoData)
+                c = QColor(220, 30, 30, 150);
+            else if (f & JR_TRACE_PASTED)
+                c = QColor(220, 40, 220, 130);
+            else if (f & JR_TRACE_MOVED)
+                c = QColor(40, 120, 255, 90);
+            else if (f & JR_TRACE_DC)
+                c = QColor(250, 210, 40, 90);
+            else if (f & ImageDocument::kReencoded)
+                c = QColor(120, 120, 120, 60);
+            else
+                continue;
+            img.setPixelColor(m % info.mcusX, m / info.mcusX, c);
+        }
+    }
+    m_grid->setOverlay(img);
 }
 
 void MainWindow::refreshFromDocument()
 {
-    m_grid->setPixmap(QPixmap::fromImage(m_doc.rgb().toImage()));
+    syncGridGeometry();
+    m_grid->setPixmap(QPixmap::fromImage(
+        (m_compareAction->isChecked() ? m_doc.originalRgb() : m_doc.rgb()).toImage()));
     // Picked blocks were measured against the previous state, so their numbers
     // no longer describe what is on screen. A reference measured in another
     // image is untouched by anything that happens here, and keeping it is the
@@ -2001,6 +2489,8 @@ void MainWindow::refreshFromDocument()
     updateSelectionInfo();
     updateMatchInfo();
     updateClipboardInfo();
+    refreshAnalysis();
+    refreshOverlay();
 }
 
 void MainWindow::updateWindowTitle()
@@ -2051,12 +2541,21 @@ void MainWindow::updateActionStates()
         m_spins[c]->setEnabled(open);
     }
     m_applyColorButton->setEnabled(hasPendingColorEdit());
+    m_reportAction->setEnabled(true);
     m_resetDeltasButton->setEnabled(open);
     m_pickReferenceButton->setEnabled(open);
     m_pickTargetButton->setEnabled(open);
     m_referenceFromImageButton->setEnabled(open);
     m_matchButton->setEnabled(m_referenceStats.has_value() && m_targetStats.has_value());
     m_blockCountSpin->setEnabled(open);
+    m_unitCombo->setEnabled(open);
+    m_unitCountSpin->setEnabled(open);
+    m_compareAction->setEnabled(open);
+    m_nextDamageAction->setEnabled(open);
+    if (QStandardItemModel *model = qobject_cast<QStandardItemModel *>(m_scopeCombo->model())) {
+        if (QStandardItem *item = model->item(int(ScopeChoice::SelectionToRestart)))
+            item->setEnabled(open && m_doc.info().restartInterval > 0);
+    }
     m_copyRowSpin->setEnabled(open);
     m_copyColSpin->setEnabled(open);
 }
@@ -2071,16 +2570,20 @@ void MainWindow::updateImageInfo()
     const jr::Info &info = m_doc.info();
     QStringList lines;
     lines << tr("%1 × %2 px").arg(info.width).arg(info.height);
-    lines << tr("MCU %1 × %2 px  ·  grid %3 × %4  (%5 blocks)")
+    lines << tr("MCU %1 × %2 px  ·  grid %3 × %4  (%5 MCUs, %6 blocks each)")
                  .arg(info.mcuWidth)
                  .arg(info.mcuHeight)
                  .arg(info.mcusX)
                  .arg(info.mcusY)
-                 .arg(info.mcuCount());
-    lines << tr("Sampling %1×%2  ·  %3")
-                 .arg(info.maxHSamp)
-                 .arg(info.maxVSamp)
-                 .arg(info.progressive ? tr("progressive") : tr("baseline"));
+                 .arg(info.mcuCount())
+                 .arg(info.blocksPerMcu);
+    lines << tr("Chroma %1  ·  %2  ·  %3")
+                 .arg(info.samplingName())
+                 .arg(info.progressive ? tr("progressive, %n scan(s)", nullptr, info.scanCount)
+                      : info.scanCount > 1 ? tr("sequential, %n scan(s)", nullptr, info.scanCount)
+                                           : tr("baseline"))
+                 .arg(info.restartInterval > 0 ? tr("restart every %1 MCUs").arg(info.restartInterval)
+                                               : tr("no restart markers"));
     lines << tr("DC quant  Y %1  ·  Cb %2  ·  Cr %3")
                  .arg(info.dcQuant[0])
                  .arg(info.dcQuant[1])
@@ -2089,6 +2592,10 @@ void MainWindow::updateImageInfo()
     // whose numbers these are.
     if (!m_doc.donorPath().isEmpty())
         lines << tr("Header borrowed from %1").arg(QFileInfo(m_doc.donorPath()).fileName());
+    if (m_doc.trailer().present())
+        lines << tr("After the image: %1").arg(m_doc.trailer().describe());
+    if (!info.interleavedSingleScan())
+        lines << tr("Insert and delete assume MCU order, which this file's scans do not follow.");
     m_infoLabel->setText(lines.join(QStringLiteral("\n")));
     updateDeltaLabels();
 }
@@ -2096,7 +2603,7 @@ void MainWindow::updateImageInfo()
 void MainWindow::updateSelectionInfo()
 {
     if (!m_doc.isOpen() || !m_grid->hasSelection()) {
-        m_selectionLabel->setText(tr("No blocks selected."));
+        m_selectionLabel->setText(tr("No MCUs selected."));
         m_selectionColorLabel->clear();
         return;
     }
@@ -2106,7 +2613,7 @@ void MainWindow::updateSelectionInfo()
     m_grid->lastBlock(&lastRow, &lastCol);
     const int count = m_grid->selectedCount();
 
-    m_selectionLabel->setText(tr("%1 block(s), from row %2 col %3 to row %4 col %5.")
+    m_selectionLabel->setText(tr("%1 MCU(s), from row %2 col %3 to row %4 col %5.")
                                   .arg(count)
                                   .arg(firstRow)
                                   .arg(firstCol)
@@ -2246,6 +2753,265 @@ void MainWindow::updateMatchInfo()
 }
 
 // ---------------------------------------------------------------------------
+// Analysis and tools
+// ---------------------------------------------------------------------------
+
+void MainWindow::selectMcu(int index, bool center)
+{
+    const jr::Info &info = m_doc.info();
+    if (index < 0 || index >= info.mcuCount())
+        return;
+    const int row = index / info.mcusX, col = index % info.mcusX;
+    m_grid->selectRange(row, col, row, col);
+    if (center)
+        m_view->centerOn(QRectF(col * info.mcuWidth, row * info.mcuHeight, info.mcuWidth,
+                                info.mcuHeight)
+                             .center());
+}
+
+void MainWindow::onBaseMcuRequested(int baseIndex)
+{
+    if (!m_doc.isOpen())
+        return;
+    // The map numbers MCUs as the file holds them; find where that one sits
+    // after the recipe's moves.
+    const QVector<qint32> src = m_doc.unitSources();
+    const int bpm = m_doc.info().blocksPerMcu;
+    int at = baseIndex;
+    for (int m = 0; m < m_doc.info().mcuCount(); ++m) {
+        if (src.value(qsizetype(m) * bpm, -1) == baseIndex * bpm) {
+            at = m;
+            break;
+        }
+    }
+    selectMcu(at, true);
+}
+
+void MainWindow::onNextDamage()
+{
+    if (!requireImage())
+        return;
+    if (!m_damage.isValid()) {
+        const QVector<qint32> src = m_doc.unitSources();
+        m_damage = analysis::damage(m_doc.info(), m_doc.ycbcr(), &m_analysisDock->map(), &src);
+    }
+    int row = 0, col = 0;
+    const int from = m_grid->anchorBlock(&row, &col) ? row * m_doc.info().mcusX + col : -1;
+    int next = analysis::nextDamaged(m_damage, from);
+    if (next < 0 && from >= 0)
+        next = analysis::nextDamaged(m_damage, -1); // wrap around
+    if (next < 0) {
+        log(tr("No MCU looks damaged."));
+        return;
+    }
+    selectMcu(next, true);
+    log(tr("MCU %1 (row %2, col %3) looks damaged.")
+            .arg(next)
+            .arg(next / m_doc.info().mcusX)
+            .arg(next % m_doc.info().mcusX));
+}
+
+void MainWindow::onAutoAlign()
+{
+    if (!requireImage() || !requireSelection())
+        return;
+    int row = 0, col = 0;
+    m_grid->anchorBlock(&row, &col);
+    const jr::Info &info = m_doc.info();
+    if (row == 0) {
+        QMessageBox::information(this, tr("Find the alignment"),
+                                 tr("The alignment is judged against the MCU row above the "
+                                    "selection, so select an MCU below the first row."));
+        return;
+    }
+    const int start = row * info.mcusX + col;
+    QApplication::setOverrideCursor(Qt::WaitCursor);
+    const QVector<analysis::AlignCandidate> found =
+        analysis::autoAlign(info, m_doc.ycbcr(), start, qMin(info.mcuCount(), 3 * info.mcusX));
+    QApplication::restoreOverrideCursor();
+    if (found.isEmpty()) {
+        log(tr("Nothing to align against here."));
+        return;
+    }
+
+    QStringList items;
+    double baseline = 0;
+    for (const analysis::AlignCandidate &c : found)
+        if (c.shift == 0)
+            baseline = c.cost;
+    for (int i = 0; i < found.size() && i < 15; ++i) {
+        const analysis::AlignCandidate &c = found[i];
+        const QString what = c.shift > 0 ? tr("insert %n MCU(s)", nullptr, c.shift)
+            : c.shift < 0                ? tr("delete %n MCU(s)", nullptr, -c.shift)
+                                         : tr("leave as is");
+        items << tr("%1   ·   seam %2%3   ·   step Y %4 Cb %5 Cr %6")
+                     .arg(what)
+                     .arg(c.cost, 0, 'f', 1)
+                     .arg(baseline > 0 ? tr(" (%1% of now)").arg(int(100 * c.cost / baseline)) : QString())
+                     .arg(c.offset[0], 0, 'f', 0)
+                     .arg(c.offset[1], 0, 'f', 0)
+                     .arg(c.offset[2], 0, 'f', 0);
+    }
+    bool ok = false;
+    const QString pick = QInputDialog::getItem(
+        this, tr("Find the alignment"),
+        tr("Shifts of the stream at row %1, col %2, ranked by how well the content below continues "
+           "the content above (with any constant color step taken out, since a DC drift is "
+           "corrected separately). Pick one to preview it; Ctrl+Enter commits.")
+            .arg(row)
+            .arg(col),
+        items, 0, false, &ok);
+    if (!ok)
+        return;
+    const int i = int(items.indexOf(pick));
+    m_pendingMcuShift = 0;
+    m_pendingUnitShift = 0;
+    nudgeShift(found[i].shift, 0);
+}
+
+void MainWindow::onAutoDc()
+{
+    if (!requireImage())
+        return;
+    if (scopeChoice() != ScopeChoice::WholeImage && !requireSelection())
+        return;
+    const QByteArray mask = currentScopeMask();
+    const analysis::DcEstimate est = analysis::autoDc(*m_doc.coefs(), mask);
+    if (!est.valid) {
+        QMessageBox::information(this, tr("Estimate DC offset"),
+                                 tr("The scope has no edge against MCUs outside it to measure. "
+                                    "Choose a scope that starts where the damage starts."));
+        return;
+    }
+    m_updatingControls = true;
+    for (int c = 0; c < 3; ++c) {
+        const int delta = qBound(-colormath::kCdeltaLimit, est.cdelta[c], colormath::kCdeltaLimit);
+        m_sliders[c]->setValue(delta);
+        m_spins[c]->setValue(delta);
+    }
+    m_updatingControls = false;
+    updateDeltaLabels();
+    updateActionStates();
+    log(tr("Estimated from %1 boundary pixels: Y %2, Cb %3, Cr %4 (%5 confidence).")
+            .arg(est.boundaryPixels)
+            .arg(est.cdelta[0])
+            .arg(est.cdelta[1])
+            .arg(est.cdelta[2])
+            .arg(est.confidence >= 0.7 ? tr("high") : est.confidence >= 0.4 ? tr("moderate") : tr("low")));
+    schedulePreview();
+}
+
+void MainWindow::onByteEdits(const QVector<ByteEdit> &edits, const QString &description)
+{
+    if (!requireImage())
+        return;
+    cancelPreview();
+    QApplication::setOverrideCursor(Qt::WaitCursor);
+    QString error;
+    const bool ok = m_doc.addByteEdits(edits, description, &error);
+    QApplication::restoreOverrideCursor();
+    if (!ok) {
+        showError(tr("Could not edit the stream"), error);
+        return;
+    }
+    m_showingPreview = false;
+    refreshFromDocument();
+    log(description);
+}
+
+void MainWindow::onEmbeddedImages()
+{
+    if (!requireImage())
+        return;
+    QByteArray bytes;
+    if (!readFile(m_doc.filePath(), &bytes))
+        return;
+    EmbeddedImagesDialog dialog(bytes, m_doc.filePath(), this);
+    if (dialog.isEmpty()) {
+        QMessageBox::information(this, tr("Pictures inside this file"),
+                                 tr("This file carries no other complete JPEG."));
+        return;
+    }
+    if (dialog.exec() != QDialog::Accepted)
+        return;
+    if (dialog.chosenUse() == EmbeddedImagesDialog::Use::ColorReference) {
+        const jr::Info &info = m_doc.info();
+        ReferenceColorDialog ref(dialog.chosenPath(), QSize(info.width, info.height),
+                                 m_targetStats ? colormath::mcuRect(info, m_targetRow, m_targetCol) : QRect(),
+                                 QString(), this);
+        if (ref.exec() != QDialog::Accepted)
+            return;
+        m_referenceStats = ref.stats();
+        m_reference = Reference{Reference::Kind::External, -1, -1, ref.referencePath(), ref.patch(),
+                                ref.monochrome()};
+        m_grid->setMarkedBlock(McuGridItem::PickMode::Reference, -1, -1);
+        updateMatchInfo();
+        log(tr("Reference color taken from the embedded picture: %1.")
+                .arg(formatTriple(m_referenceStats->mean)));
+    } else if (dialog.chosenUse() == EmbeddedImagesDialog::Use::FillReference) {
+        log(tr("Saved the embedded picture as %1; choose it in the fill dialog.").arg(dialog.chosenPath()));
+        onFillFromReference();
+    }
+}
+
+void MainWindow::onBatchTriage()
+{
+    const QString folder = QFileDialog::getExistingDirectory(
+        this, tr("Folder to triage"), QFileInfo(m_doc.filePath()).absolutePath());
+    if (folder.isEmpty())
+        return;
+    auto *dialog = new BatchDialog(folder, this);
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    connect(dialog, &BatchDialog::openRequested, this, [this](const QString &path) { openFile(path); });
+    dialog->show();
+}
+
+void MainWindow::onCarve()
+{
+    const QString path = QFileDialog::getOpenFileName(this, tr("File to search for JPEGs"),
+                                                      QFileInfo(m_doc.filePath()).absolutePath());
+    if (path.isEmpty())
+        return;
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly)) {
+        showError(tr("Could not read"), file.errorString());
+        return;
+    }
+    // Mapped rather than read, so a disk image larger than memory still works.
+    const qint64 size = file.size();
+    uchar *mapped = file.map(0, size);
+    const QByteArray bytes = mapped ? QByteArray::fromRawData(reinterpret_cast<const char *>(mapped), size)
+                                    : file.readAll();
+    QApplication::setOverrideCursor(Qt::WaitCursor);
+    const QVector<jpegfile::Embedded> found = jpegfile::carve(bytes);
+    QApplication::restoreOverrideCursor();
+    if (found.isEmpty()) {
+        QMessageBox::information(this, tr("Carve JPEGs"), tr("No complete JPEG was found in %1.")
+                                                              .arg(QFileInfo(path).fileName()));
+        return;
+    }
+    const QString out = QFileDialog::getExistingDirectory(
+        this, tr("Save the %n JPEG(s) found into", nullptr, int(found.size())), QFileInfo(path).absolutePath());
+    if (out.isEmpty())
+        return;
+    int written = 0;
+    for (const jpegfile::Embedded &e : found) {
+        QSaveFile f(QDir(out).filePath(QStringLiteral("%1_%2_%3x%4.jpg")
+                                           .arg(QFileInfo(path).completeBaseName())
+                                           .arg(e.offset, 10, 10, QLatin1Char('0'))
+                                           .arg(e.width)
+                                           .arg(e.height)));
+        if (f.open(QIODevice::WriteOnly) && f.write(bytes.constData() + e.offset, e.length) == e.length
+            && f.commit())
+            ++written;
+    }
+    log(tr("Carved %1 of %2 JPEG(s) from %3 into %4.")
+            .arg(written)
+            .arg(found.size())
+            .arg(QFileInfo(path).fileName(), out));
+}
+
+// ---------------------------------------------------------------------------
 // Small helpers
 // ---------------------------------------------------------------------------
 
@@ -2276,6 +3042,6 @@ bool MainWindow::requireSelection()
     if (m_grid->hasSelection())
         return true;
     QMessageBox::information(this, tr("No selection"),
-                             tr("Select at least one MCU block first. Drag across the image."));
+                             tr("Select at least one MCU first. Drag across the image."));
     return false;
 }

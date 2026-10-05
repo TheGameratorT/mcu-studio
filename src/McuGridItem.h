@@ -11,6 +11,7 @@
 
 #include <QByteArray>
 #include <QGraphicsObject>
+#include <QImage>
 #include <QPixmap>
 
 #include "JpegRepair.h"
@@ -57,6 +58,11 @@ public:
 
     void setMarkedBlock(PickMode which, int row, int col); // row < 0 clears
 
+    // A color per MCU laid over the picture: mcusX x mcusY, ARGB, scaled up
+    // without smoothing so each MCU is one flat tile. A null image removes it.
+    void setOverlay(const QImage &perMcu);
+    bool hasOverlay() const { return !m_overlay.isNull(); }
+
 signals:
     void selectionChanged();
     void blockPicked(McuGridItem::PickMode mode, int row, int col);
@@ -80,6 +86,7 @@ private:
     void paintMark(QPainter *painter, int row, int col, const QColor &color) const;
 
     QPixmap m_pixmap;
+    QImage m_overlay;
     jr::Info m_info;
 
     bool m_gridVisible = true;

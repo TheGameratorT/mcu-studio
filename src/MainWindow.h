@@ -8,7 +8,9 @@
 
 #include <optional>
 
+#include "Analysis.h"
 #include "ColorMath.h"
+#include "DonorHeader.h"
 #include "ImageDocument.h"
 #include "JpegRepair.h"
 #include "McuGridItem.h"
@@ -28,6 +30,8 @@ class QSlider;
 class QSpinBox;
 class QTimer;
 class McuGraphicsView;
+class AnalysisDock;
+class QActionGroup;
 
 class MainWindow : public QMainWindow
 {
@@ -79,9 +83,20 @@ private slots:
     void onResetDeltas();
     void onAutoColor();
 
-    void onInsertBlocks();
-    void onDeleteBlocks();
+    void onInsertMcus();
+    void onDeleteMcus();
+    void onInsertUnits();
+    void onDeleteUnits();
     void onCopyBlocks();
+    void onAutoAlign();
+    void onAutoDc();
+    void onNextDamage();
+    void onEmbeddedImages();
+    void onBatchTriage();
+    void onCarve();
+    void onWriteReport();
+    void onByteEdits(const QVector<ByteEdit> &edits, const QString &description);
+    void onBaseMcuRequested(int baseIndex);
 
     void onCopySelection();
     void onPasteOver();
@@ -100,7 +115,8 @@ private:
         jr::Samples rgb;
     };
 
-    enum class ScopeChoice { SelectedBlocks, SelectionToEnd, WholeImage };
+    enum class ScopeChoice { SelectedBlocks, SelectionToEnd, SelectionToRestart, WholeImage };
+    enum class Overlay { None, Damage, Provenance };
 
     // Where the reference color was measured.
     //
@@ -153,6 +169,8 @@ private:
     // has had time to wonder whether it is. Failure is reported once per
     // document rather than on every keystroke -- see m_projectBroken.
     void saveProject();
+    // Exports to `path`, writing the report beside it when asked to.
+    bool doExport(const QString &path);
     // The current session, in the form the project file stores.
     project::Project currentProject() const;
     // Renames a project that could not be read or replayed out of the way, so
@@ -199,7 +217,21 @@ private:
     QByteArray currentScopeMask() const;
     int deltaFor(int component) const;
     QVector<jr::Op> pendingColorOps() const;
+    // The live, uncommitted shift the [ and ] keys build up, as ops.
+    QVector<jr::Op> pendingShiftOps() const;
+    // Everything previewed but not committed: the shift first, then color.
+    QVector<jr::Op> pendingOps() const;
     bool hasPendingColorEdit() const;
+    bool hasPendingEdit() const;
+    void nudgeShift(int mcus, int units);
+    void commitShift();
+    void cancelShift();
+    void selectMcu(int index, bool center);
+    void refreshOverlay();
+    void refreshAnalysis();
+    // The grid over the current render, with the same geometry check the
+    // document makes: a byte edit can change the frame.
+    void syncGridGeometry();
 
     void schedulePreview();
     void cancelPreview();
@@ -211,6 +243,9 @@ private:
     ImageDocument m_doc;
     QString m_exportPath;  // empty until the user has chosen where output goes
     QString m_projectPath; // where this session is being written down
+    // How the donor header was assembled, for a reconstruction; written to the
+    // project so reopening rebuilds the same bytes.
+    donor::SpliceOptions m_donorOptions;
     // Set when writing the project failed. The folder holding a damaged file is
     // not always one we can write to -- read-only rescue media, a mounted disk
     // image -- and a tool that quietly stops saving in that case would be worse
@@ -241,6 +276,13 @@ private:
     QAction *m_pasteOverAction = nullptr;
     QAction *m_pasteInsertAction = nullptr;
     QAction *m_fillReferenceAction = nullptr;
+    QAction *m_compareAction = nullptr;
+    QAction *m_nextDamageAction = nullptr;
+    QAction *m_reportAction = nullptr;
+    QAction *m_thumbnailAction = nullptr;
+    QAction *m_trailerAction = nullptr;
+    QActionGroup *m_overlayGroup = nullptr;
+    Overlay m_overlay = Overlay::None;
 
     QLabel *m_infoLabel = nullptr;
     QLabel *m_selectionLabel = nullptr;
@@ -262,6 +304,16 @@ private:
     QLabel *m_matchWarningLabel = nullptr;
 
     QSpinBox *m_blockCountSpin = nullptr;
+    QComboBox *m_unitCombo = nullptr;
+    QSpinBox *m_unitCountSpin = nullptr;
+    QLabel *m_shiftLabel = nullptr;
+    // The keyboard's live shift: whole MCUs and single blocks, previewed
+    // at the selection's anchor until committed or cancelled.
+    int m_pendingMcuShift = 0;
+    int m_pendingUnitShift = 0;
+    AnalysisDock *m_analysisDock = nullptr;
+    analysis::DamageMap m_damage;
+    int m_hoverIndex = -1;
     QSpinBox *m_copyRowSpin = nullptr;
     QSpinBox *m_copyColSpin = nullptr;
 

@@ -4,6 +4,7 @@
 #include <QApplication>
 #include <QCommandLineParser>
 #include <QIcon>
+#include <QTimer>
 
 #include "MainWindow.h"
 #include "PlatformStyle.h"
@@ -31,13 +32,19 @@ int main(int argc, char *argv[])
     QCommandLineParser parser;
     parser.setApplicationDescription(
         QCoreApplication::translate("main",
-                                    "Repair JPEG images by editing their DCT coefficients: "
-                                    "shift color per component, and insert, delete or copy "
-                                    "MCU blocks."));
+                                    "Repair damaged JPEG images by editing their bitstream and "
+                                    "DCT coefficients: realign the stream, correct DC drift per "
+                                    "component, transplant headers, and fill lost MCUs."));
     parser.addHelpOption();
     parser.addVersionOption();
     parser.addPositionalArgument(QCoreApplication::translate("main", "image"),
                                  QCoreApplication::translate("main", "JPEG to open on start."));
+    // For CI and documentation: open the image, wait for it to render, save
+    // a picture of the window and quit.
+    QCommandLineOption screenshot(QStringLiteral("screenshot"),
+                                  QCoreApplication::translate("main", "Save a screenshot of the window to <png> and exit."),
+                                  QStringLiteral("png"));
+    parser.addOption(screenshot);
     parser.process(app);
 
     MainWindow window;
@@ -46,6 +53,14 @@ int main(int argc, char *argv[])
     const QStringList args = parser.positionalArguments();
     if (!args.isEmpty())
         window.openFile(args.first());
+
+    if (parser.isSet(screenshot)) {
+        const QString target = parser.value(screenshot);
+        QTimer::singleShot(1500, &window, [&window, target] {
+            const bool ok = window.grab().save(target);
+            QCoreApplication::exit(ok ? 0 : 1);
+        });
+    }
 
     return app.exec();
 }

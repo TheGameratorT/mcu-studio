@@ -10,6 +10,7 @@
 #include <QString>
 #include <QVector>
 
+#include <memory>
 #include <optional>
 
 #include "jpegrepair_core.h"
@@ -28,9 +29,24 @@ struct Info {
     int maxVSamp = 1;
     int dcQuant[JR_MAX_COMPONENTS] = {1, 1, 1, 1};
     int blocksPerMcu = 0;
+    int hSamp[JR_MAX_COMPONENTS] = {1, 1, 1, 1};
+    int vSamp[JR_MAX_COMPONENTS] = {1, 1, 1, 1};
     bool progressive = false;
+    int restartInterval = 0; // MCUs between restart markers, 0 for none
+    int scanCount = 0;
+    int colorSpace = 0;      // libjpeg's J_COLOR_SPACE
 
     int mcuCount() const { return mcusX * mcusY; }
+    // Whether MCU scan order is the order the file's data was written in, which
+    // is what makes insert and delete line up with the way damage spreads.
+    // False for progressive files and for sequential files written one
+    // component per scan.
+    bool interleavedSingleScan() const { return !progressive && scanCount <= 1; }
+    // "4:2:0" and friends, for the sampling layouts that have a name.
+    QString samplingName() const;
+    // The 8x8 block at position `unit` (0 .. blocksPerMcu-1) of an MCU, as
+    // "Y2" or "Cb", for the block-level shift controls.
+    QString unitName(int unit) const;
     bool isValid() const { return width > 0 && height > 0 && mcusX > 0 && mcusY > 0; }
 };
 
@@ -46,13 +62,26 @@ struct Clipboard {
     int mcuCount = 0;
     int blocksPerMcu = 0;
     int numComponents = 0;
+    int hSamp[JR_MAX_COMPONENTS] = {0, 0, 0, 0};
+    int vSamp[JR_MAX_COMPONENTS] = {0, 0, 0, 0};
+    // The quantization tables the coefficients are denominated in, natural
+    // order, 64 per component.
+    QVector<quint16> quant;
     int srcRow = -1, srcCol = -1; // provenance, for the log
 
     bool isValid() const;
     // Whether this run can go into `info` as-is. MCU layout depends on the
-    // components' sampling factors, so a snapshot from a differently sampled
-    // image would shear the channels apart.
+    // components' sampling factors -- not just how many blocks an MCU holds:
+    // 4:2:2 and 4:4:0 both have four, laid out differently -- so a snapshot
+    // from a differently sampled image would shear the channels apart.
     bool fits(const Info &info) const;
+    // Whether `quantTables` (64 per component) are the ones these coefficients
+    // were quantized with. If not, the same numbers mean different amounts.
+    bool sameQuantization(const QVector<quint16> &quantTables) const;
+    // The blocks re-expressed in `quantTables`: each coefficient becomes
+    // round(c * Qsrc / Qdst). Lossy only where the destination's step is
+    // coarser than the source's, and far closer than pasting the numbers raw.
+    Clipboard requantized(const QVector<quint16> &quantTables) const;
 };
 
 // Which MCUs an operation touches.
@@ -82,6 +111,13 @@ public:
     int maskRows() const { return m_maskRows; }
     int maskCols() const { return m_maskCols; }
 
+    bool operator==(const Scope &o) const
+    {
+        return m_kind == o.m_kind && m_row == o.m_row && m_col == o.m_col && m_h == o.m_h
+            && m_w == o.m_w && m_mask == o.m_mask && m_maskRows == o.m_maskRows
+            && m_maskCols == o.m_maskCols;
+    }
+
 private:
     jr_scope_kind m_kind = JR_SCOPE_RUN;
     int m_row = 0, m_col = 0, m_h = 0, m_w = 0;
@@ -100,8 +136,13 @@ struct Op {
 
     static Op cdelta(int component, int delta, Scope scope);
     static Op copyBlocks(int dRow, int dCol, Scope scope);
-    static Op insertBlocks(int count, Scope scope);
-    static Op deleteBlocks(int count, Scope scope);
+    // Whole MCUs, from the scope's origin to the end of the image.
+    static Op insertMcus(int count, Scope scope);
+    static Op deleteMcus(int count, Scope scope);
+    // Single 8x8 blocks in coding order, starting at block `unit` of the
+    // MCU at (row, col).
+    static Op insertUnits(int count, int row, int col, int unit);
+    static Op deleteUnits(int count, int row, int col, int unit);
     // Writes `clip` back starting at (row, col) and running in scan order,
     // overwriting what is there. Stops at the end of the image.
     static Op paste(int row, int col, const Clipboard &clip);
@@ -109,6 +150,11 @@ struct Op {
     // `coefs` has to have been assembled by walking the same scope the same
     // way -- see Patch and fill::build.
     static Op fillScope(Scope scope, QByteArray coefs, int mcuCount);
+
+    bool operator==(const Op &o) const
+    {
+        return type == o.type && scope == o.scope && a == o.a && b == o.b && coefs == o.coefs;
+    }
 };
 
 // Pixels turned into the blocks a particular JPEG would have stored for them.
@@ -187,6 +233,11 @@ struct Salvage {
     qsizetype damageAt = -1;
     qsizetype droppedBytes = 0;   // Truncate: bytes cut from the end
     qsizetype defusedMarkers = 0; // ReadThrough: stray markers neutralized
+    // Where data after a clean End Of Image marker begins, -1 if there is
+    // none. That data is a trailer (an MPF preview, a motion photo's video, a
+    // ransomware footer), not damage: it is cut from `data` but does not count
+    // toward damageAt or droppedBytes.
+    qsizetype trailerAt = -1;
     // First entropy-coded byte of the first scan, -1 if the walk never reached
     // one. Lets a caller weigh the loss against the picture data rather than
     // against the file, which counts a header the damage never touched.
@@ -198,6 +249,54 @@ struct Salvage {
     int restartInterval = 0;
 
     bool damaged() const { return damageAt >= 0; }
+};
+
+// Every coefficient of an image, held in memory between edits.
+//
+// Loading runs the entropy decoder once. After that an edit is a memmove or a
+// loop over DC terms, a preview decodes only the MCU rows an edit changed, and
+// the Huffman coder runs again only when a file is written out. Instances are
+// treated as immutable once built and shared between the UI and render
+// threads through shared_ptr<const Coefs>.
+class Coefs
+{
+public:
+    ~Coefs();
+    Coefs(const Coefs &) = delete;
+    Coefs &operator=(const Coefs &) = delete;
+
+    static std::shared_ptr<Coefs> load(const QByteArray &jpeg, QString *error = nullptr);
+    std::shared_ptr<Coefs> clone() const;
+
+    bool apply(const QVector<Op> &ops, QString *error = nullptr);
+    // Writes the coefficients out, taking markers and frame parameters from
+    // `headerSource`, the file they were loaded from.
+    std::optional<QByteArray> write(const QByteArray &headerSource, QString *error = nullptr) const;
+    std::optional<Clipboard> readMcus(int row, int col, int count, QString *error = nullptr) const;
+
+    Info info() const;
+    // 64 per component, natural order.
+    QVector<quint16> quantTables() const;
+    const jr_coefs *raw() const { return m_c; }
+    jr_coefs *raw() { return m_c; }
+    const qint16 *mcu(int index) const;
+    qint16 *mcu(int index);
+
+    // Decodes the whole picture, split across the thread pool.
+    Samples render(bool ycbcr) const;
+    // Re-decodes MCU rows of `target`, which must already hold this image's
+    // size, in place. Used with changedRows() so an edit costs only the rows
+    // it touched.
+    void renderRows(Samples &target, const QVector<int> &mcuRows, bool ycbcr) const;
+    // MCU rows whose pixels can differ between this and `other`: the rows
+    // whose coefficients differ, widened by one row each way because the
+    // chroma upsampler reads a sample row across the boundary. Empty if the
+    // two are identical; every row if their geometry differs.
+    QVector<int> changedRows(const Coefs &other) const;
+
+private:
+    Coefs() = default;
+    jr_coefs *m_c = nullptr;
 };
 
 // Never fails: a file too broken to walk comes back unchanged, for probe to
@@ -222,6 +321,8 @@ std::optional<Patch> quantizePatch(const QByteArray &destJpeg, const Samples &rg
 // Applies every op in order to one coefficient read, then re-emits the
 // stream. Blocks no op touched keep their exact coefficients, so they decode
 // to the same pixels as before -- repairs never cost a re-encode generation.
+// (Coefficients a damaged stream decoded outside the range a JPEG can store
+// are clamped into it; see jr_coefs_sanitize.)
 std::optional<QByteArray> apply(const QByteArray &jpeg, const QVector<Op> &ops,
                                 QString *error = nullptr);
 
@@ -232,7 +333,8 @@ std::optional<Samples> decodeYCbCr(const QByteArray &jpeg, QString *error = null
 
 // markerSource is the JPEG the pixels came from; its Exif and other metadata
 // markers are carried into the re-encoded output. Pass an empty array to write
-// a bare JPEG.
+// a bare JPEG. Uses libjpeg's standard tables and 4:2:0 sampling: for anything
+// that has to stay in step with an existing file, use quantizePatch instead.
 std::optional<QByteArray> encodeRgb(const Samples &rgb, int quality, const QByteArray &markerSource,
                                     QString *error = nullptr);
 

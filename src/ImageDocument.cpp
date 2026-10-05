@@ -4,18 +4,92 @@
 #include "ImageDocument.h"
 
 #include <QCoreApplication>
+#include <QCryptographicHash>
 #include <QFile>
 #include <QFileInfo>
+#include <QImage>
 #include <QSaveFile>
 
 #include "AutoColor.h"
+#include "Bitstream.h"
+#include "Exif.h"
 
 namespace {
-QString tr(const char *text)
+
+QString tr(const char *text, const char *disambiguation = nullptr, int n = -1)
 {
-    return QCoreApplication::translate("ImageDocument", text);
+    return QCoreApplication::translate("ImageDocument", text, disambiguation, n);
 }
+
+// Longest edge of the Exif thumbnail written on export, as cameras write it.
+constexpr int kThumbnailEdge = 160;
+constexpr int kThumbnailQuality = 85;
+constexpr int kAutoColorCacheEntries = 4;
+
 } // namespace
+
+// ---------------------------------------------------------------------------
+// Byte edits
+// ---------------------------------------------------------------------------
+
+QString ByteEdit::describe() const
+{
+    switch (kind) {
+    case Kind::DeleteBytes:
+        return tr("delete %n byte(s) at %1", nullptr, int(count)).arg(offset);
+    case Kind::InsertBytes:
+        return tr("insert %n byte(s) at %1", nullptr, int(data.size())).arg(offset);
+    case Kind::FlipBit:
+        return tr("flip bit %1 of byte %2").arg(bit).arg(offset);
+    case Kind::DeleteBits:
+        return tr("delete %n bit(s) at byte %1 bit %2", nullptr, int(count)).arg(offset).arg(bit);
+    case Kind::InsertBits:
+        return tr("insert %n bit(s) at byte %1 bit %2", nullptr, int(count)).arg(offset).arg(bit);
+    case Kind::TruncateAt:
+        return tr("cut the file at byte %1").arg(offset);
+    }
+    return QString();
+}
+
+std::optional<QByteArray> applyByteEdit(const QByteArray &bytes, const ByteEdit &e, QString *error)
+{
+    const auto outside = [&](qint64 at) {
+        if (error)
+            *error = tr("Byte %1 is outside the file (%2 bytes).").arg(at).arg(bytes.size());
+        return std::nullopt;
+    };
+    switch (e.kind) {
+    case ByteEdit::Kind::DeleteBytes:
+        if (e.offset < 0 || e.count < 0 || e.offset + e.count > bytes.size())
+            return outside(e.offset + e.count);
+        return QByteArray(bytes).remove(e.offset, e.count);
+    case ByteEdit::Kind::InsertBytes:
+        if (e.offset < 0 || e.offset > bytes.size())
+            return outside(e.offset);
+        return QByteArray(bytes).insert(e.offset, e.data);
+    case ByteEdit::Kind::FlipBit:
+        return bitstream::flipBit(bytes, e.bitPos(), error);
+    case ByteEdit::Kind::DeleteBits:
+        return bitstream::deleteBits(bytes, e.bitPos(), int(e.count), error);
+    case ByteEdit::Kind::InsertBits:
+        return bitstream::insertBits(bytes, e.bitPos(), int(e.count), 0, error);
+    case ByteEdit::Kind::TruncateAt:
+        if (e.offset < 2 || e.offset > bytes.size())
+            return outside(e.offset);
+        return bytes.left(e.offset) + QByteArray("\xFF\xD9", 2);
+    }
+    return bytes;
+}
+
+bool operator==(const RepairStep &a, const RepairStep &b)
+{
+    return a.kind == b.kind && a.enabled == b.enabled && a.description == b.description
+        && a.ops == b.ops && a.edits == b.edits;
+}
+
+// ---------------------------------------------------------------------------
+// Opening
+// ---------------------------------------------------------------------------
 
 bool ImageDocument::load(const QString &path, QString *error, jr::SalvageMode mode)
 {
@@ -36,9 +110,12 @@ bool ImageDocument::load(const QString &path, QString *error, jr::SalvageMode mo
     const QByteArray data = file.readAll();
     file.close();
 
-    if (!adopt(path, data, QString(), error, mode))
+    if (!open(path, data, error, mode))
         return false;
-
+    m_sourceSha256 = QCryptographicHash::hash(data, QCryptographicHash::Sha256);
+    m_donorPath.clear();
+    m_donorOffset = 0;
+    m_isReconstruction = false;
     m_originalCreated = created;
     m_originalModified = modified;
     m_originalAccessed = accessed;
@@ -50,103 +127,411 @@ bool ImageDocument::loadReconstructed(const QString &path, const QByteArray &byt
                                       QString *error)
 {
     // The dates come from the damaged file, not from the donor: this is still
-    // the photograph that was taken on the day the damaged file says. They are
-    // read after the fact here rather than before, since a transplant only
-    // happens once the file has already been read and failed to open; on any
-    // ordinary filesystem the modification and creation times -- the ones that
-    // matter for sorting a rescued folder -- are untouched by reading.
+    // the photograph that was taken on the day the damaged file says.
     const QFileInfo sourceInfo(path);
     const QDateTime created = sourceInfo.birthTime();
     const QDateTime modified = sourceInfo.lastModified();
     const QDateTime accessed = sourceInfo.lastRead();
 
-    if (!adopt(path, bytes, donorPath, error))
-        return false;
+    QByteArray sha;
+    QFile file(path);
+    if (file.open(QIODevice::ReadOnly))
+        sha = QCryptographicHash::hash(file.readAll(), QCryptographicHash::Sha256);
 
+    if (!open(path, bytes, error, jr::SalvageMode::Truncate))
+        return false;
+    m_sourceSha256 = sha;
+    m_donorPath = donorPath;
+    m_donorOffset = spliceOffset;
+    m_isReconstruction = true;
     m_originalCreated = created;
     m_originalModified = modified;
     m_originalAccessed = accessed;
-    // The bytes being repaired are not the ones on disk, and the only record of
-    // how they were arrived at is the donor and the splice point.
-    m_isReconstruction = true;
-    m_donorOffset = spliceOffset;
     return true;
 }
 
-bool ImageDocument::adopt(const QString &path, const QByteArray &data, const QString &donorPath,
-                          QString *error, jr::SalvageMode mode)
+bool ImageDocument::open(const QString &path, const QByteArray &raw, QString *error,
+                         jr::SalvageMode mode)
 {
-    if (data.isEmpty()) {
+    if (raw.isEmpty()) {
         if (error)
             *error = tr("%1 is empty.").arg(path);
         return false;
     }
 
-    // A scan that stops being a JPEG partway through is the normal case here,
-    // not a reason to turn the file away: cut it back to what libjpeg will read
-    // through, so the picture that survived can be worked on.
-    const jr::Salvage salvaged = jr::salvageScan(data, mode);
-    const QByteArray &usable = salvaged.data;
+    // What follows the image is set aside before anything reads the image:
+    // it is not picture data, and it is not damage either.
+    const jpegfile::Structure structure = jpegfile::walk(raw);
+    const jpegfile::Trailer trailer = jpegfile::findTrailer(raw, structure.imageEnd);
+    const QByteArray source = trailer.present() ? raw.left(trailer.offset) : raw;
 
-    QString probeError;
-    const auto info = jr::probe(usable, &probeError);
-    if (!info || !info->isValid()) {
+    // Swap in only once everything has worked, so a file that will not open
+    // leaves any open document alone.
+    const QByteArray previousSource = m_source;
+    const jr::SalvageMode previousMode = m_salvageMode;
+    m_source = source;
+    m_salvageMode = mode;
+    QString why;
+    auto base = buildBase({}, &why);
+    if (!base) {
+        m_source = previousSource;
+        m_salvageMode = previousMode;
         if (error)
-            *error = tr("%1 is not a JPEG this tool can read: %2").arg(path, probeError);
-        return false;
-    }
-    if (info->numComponents != 3) {
-        if (error) {
-            *error = tr("%1 has %2 color component(s); the MCU repair tools assume the "
-                        "usual three (Y, Cb, Cr).")
-                         .arg(path)
-                         .arg(info->numComponents);
-        }
+            *error = tr("%1 is not a JPEG this tool can read: %2").arg(path, why);
         return false;
     }
 
-    // Decode before swapping anything in, so a file that probes but will not
-    // decode leaves any previously loaded document untouched.
-    auto decoded = jr::decodeRgb(usable, error);
-    if (!decoded)
-        return false;
-
-    m_original = usable;
-    m_rendered = usable;
-    m_scanTrim = salvaged.damaged()
-            ? std::optional<ScanTrim>{{salvaged.mode, salvaged.damageAt, salvaged.droppedBytes,
-                                       salvaged.defusedMarkers, salvaged.scanStart,
-                                       data.size() - salvaged.damageAt, salvaged.restartInterval}}
-            : std::nullopt;
-    m_rgb = *decoded;
-    m_ycbcr.reset();
-    m_info = *info;
+    m_raw = raw;
+    m_trailer = trailer;
+    m_filePath = path;
     m_steps.clear();
     m_history = {QVector<RepairStep>{}};
     m_index = 0;
     m_exportedIndex = -1;
-
-    m_filePath = path;
-    m_donorPath = donorPath;
-    m_donorOffset = 0;
-    m_salvageMode = mode;
-    // A trimmed scan is a reconstruction too, the same as a donor transplant:
-    // the file on disk is still the one libjpeg refuses, and reaching these
-    // bytes again means making the same salvage choice again.
-    m_isReconstruction = m_scanTrim.has_value();
+    m_autoColorCache.clear();
+    m_originalRgb = jr::Samples{};
+    m_state.reset();
     m_originalCreated = QDateTime();
     m_originalModified = QDateTime();
     m_originalAccessed = QDateTime();
+    adoptState(*base, base->coefs);
     return true;
 }
 
-bool ImageDocument::exportTo(const QString &path, QString *error)
+std::optional<ImageDocument::Base> ImageDocument::buildBase(const QVector<ByteEdit> &edits,
+                                                            QString *error) const
 {
-    if (!isOpen()) {
+    QByteArray bytes = m_source;
+    for (const ByteEdit &e : edits) {
+        auto next = applyByteEdit(bytes, e, error);
+        if (!next)
+            return std::nullopt;
+        bytes = *next;
+    }
+
+    // A scan that stops being a JPEG partway through is the normal case here,
+    // not a reason to turn the file away: cut it back to what libjpeg will read
+    // through, so the picture that survived can be worked on.
+    const jr::Salvage salvaged = jr::salvageScan(bytes, m_salvageMode);
+
+    auto coefs = jr::Coefs::load(salvaged.data, error);
+    if (!coefs)
+        return std::nullopt;
+    const jr::Info info = coefs->info();
+    if (!info.isValid()) {
+        if (error)
+            *error = tr("the picture has no size.");
+        return std::nullopt;
+    }
+    if (info.numComponents != 3 || (info.colorSpace != 3 /* YCbCr */ && info.colorSpace != 2)) {
+        if (error) {
+            *error = tr("it stores %1 color component(s); the MCU repair tools work on the usual "
+                        "three (Y, Cb, Cr).")
+                         .arg(info.numComponents);
+        }
+        return std::nullopt;
+    }
+
+    Base base;
+    base.edits = edits;
+    base.stream = bytes;
+    base.bytes = salvaged.data;
+    base.coefs = coefs;
+    base.info = info;
+    if (salvaged.damaged()) {
+        base.trim = ScanTrim{salvaged.mode,         salvaged.damageAt,
+                             salvaged.droppedBytes, salvaged.defusedMarkers,
+                             salvaged.scanStart,    bytes.size() - salvaged.damageAt,
+                             salvaged.restartInterval};
+    }
+    return base;
+}
+
+QVector<ByteEdit> ImageDocument::enabledEdits(const QVector<RepairStep> &steps)
+{
+    QVector<ByteEdit> out;
+    for (const RepairStep &s : steps) {
+        if (s.enabled && s.kind == RepairStep::Kind::Bytes)
+            out += s.edits;
+    }
+    return out;
+}
+
+// ---------------------------------------------------------------------------
+// Rendering
+// ---------------------------------------------------------------------------
+
+std::optional<QByteArray> ImageDocument::autoColorPayload(const jr::Coefs &state,
+                                                          const QByteArray &header,
+                                                          QString *error) const
+{
+    const jr_coefs *c = state.raw();
+    const quint64 key = qHashBits(c->data, c->unit_count * 64 * sizeof(int16_t), 0x5eed);
+    if (auto it = m_autoColorCache.constFind(key); it != m_autoColorCache.constEnd())
+        return *it;
+
+    const jr::Info info = state.info();
+    const jr::Samples corrected = autocolor::autoCorrect(state.render(false));
+
+    // The encoder has to be handed whole MCUs, so the picture is extended into
+    // the padding by repeating its last row and column -- what a camera's
+    // encoder does with the same padding.
+    jr::Samples padded;
+    padded.width = info.mcusX * info.mcuWidth;
+    padded.height = info.mcusY * info.mcuHeight;
+    padded.data = QByteArray(qsizetype(padded.width) * padded.height * 3, Qt::Uninitialized);
+    for (int y = 0; y < padded.height; ++y) {
+        const quint8 *src = corrected.pixel(0, qMin(y, corrected.height - 1));
+        quint8 *dst = padded.pixel(0, y);
+        std::memcpy(dst, src, size_t(corrected.width) * 3);
+        for (int x = corrected.width; x < padded.width; ++x)
+            std::memcpy(dst + x * 3, src + (corrected.width - 1) * 3, 3);
+    }
+    const auto patch = jr::quantizePatch(header, padded, error);
+    if (!patch)
+        return std::nullopt;
+    if (m_autoColorCache.size() >= kAutoColorCacheEntries)
+        m_autoColorCache.clear();
+    m_autoColorCache.insert(key, patch->coefs);
+    return patch->coefs;
+}
+
+std::optional<std::pair<ImageDocument::Base, std::shared_ptr<jr::Coefs>>>
+ImageDocument::render(const QVector<RepairStep> &steps, QString *error) const
+{
+    const QVector<ByteEdit> edits = enabledEdits(steps);
+    Base base;
+    if (m_state && edits == m_base.edits) {
+        base = m_base;
+    } else {
+        auto rebuilt = buildBase(edits, error);
+        if (!rebuilt)
+            return std::nullopt;
+        base = *rebuilt;
+    }
+
+    std::shared_ptr<jr::Coefs> work = base.coefs->clone();
+    if (!work) {
+        if (error)
+            *error = tr("Out of memory.");
+        return std::nullopt;
+    }
+    for (const RepairStep &step : steps) {
+        if (!step.enabled || step.kind == RepairStep::Kind::Bytes)
+            continue;
+        if (step.kind == RepairStep::Kind::Ops) {
+            if (!work->apply(step.ops, error))
+                return std::nullopt;
+            continue;
+        }
+        // AutoColor: decoded, corrected, and quantized back with this file's
+        // own tables and sampling, so the grid every later step addresses
+        // does not move and nothing is written out in between.
+        const auto payload = autoColorPayload(*work, base.bytes, error);
+        if (!payload)
+            return std::nullopt;
+        const int mcus = base.info.mcuCount();
+        if (!work->apply({jr::Op::fillScope(jr::Scope::wholeImage(), *payload, mcus)}, error))
+            return std::nullopt;
+    }
+    return std::make_pair(base, work);
+}
+
+void ImageDocument::adoptState(Base base, std::shared_ptr<const jr::Coefs> state)
+{
+    const bool sameGeometry = m_state && m_rgb.isValid() && m_base.info.width == base.info.width
+        && m_base.info.height == base.info.height && m_base.info.mcusX == base.info.mcusX
+        && m_base.info.mcusY == base.info.mcusY && m_base.info.blocksPerMcu == base.info.blocksPerMcu;
+    if (sameGeometry) {
+        const QVector<int> rows = state->changedRows(*m_state);
+        state->renderRows(m_rgb, rows, false);
+        if (m_ycbcrValid)
+            state->renderRows(m_ycbcr, rows, true);
+    } else {
+        m_rgb = state->render(false);
+        m_ycbcr = jr::Samples{};
+        m_ycbcrValid = false;
+    }
+    const bool baseChanged = !m_base.coefs || m_base.coefs != base.coefs;
+    m_base = std::move(base);
+    m_state = std::move(state);
+    if (baseChanged)
+        m_originalRgb = jr::Samples{};
+}
+
+bool ImageDocument::show(const QVector<RepairStep> &steps, QString *error)
+{
+    auto rendered = render(steps, error);
+    if (!rendered)
+        return false;
+    adoptState(rendered->first, rendered->second);
+    return true;
+}
+
+std::optional<ImageDocument::Preview>
+ImageDocument::preview(const std::shared_ptr<const jr::Coefs> &state, const jr::Samples &rgb,
+                       const QVector<jr::Op> &pending, QString *error)
+{
+    if (!state)
+        return std::nullopt;
+    std::shared_ptr<jr::Coefs> work = state->clone();
+    if (!work || !work->apply(pending, error))
+        return std::nullopt;
+    Preview out;
+    out.rgb = rgb;
+    work->renderRows(out.rgb, work->changedRows(*state), false);
+    out.coefs = work;
+    return out;
+}
+
+const jr::Samples &ImageDocument::ycbcr() const
+{
+    if (!m_ycbcrValid && m_state) {
+        m_ycbcr = m_state->render(true);
+        m_ycbcrValid = true;
+    }
+    return m_ycbcr;
+}
+
+const jr::Samples &ImageDocument::originalRgb() const
+{
+    if (!m_originalRgb.isValid() && m_base.coefs)
+        m_originalRgb = m_base.coefs->render(false);
+    return m_originalRgb;
+}
+
+QVector<jr::Op> ImageDocument::enabledOps() const
+{
+    QVector<jr::Op> out;
+    for (const RepairStep &s : m_steps) {
+        if (s.enabled && s.kind == RepairStep::Kind::Ops)
+            out += s.ops;
+    }
+    return out;
+}
+
+QVector<qint32> ImageDocument::unitSources() const
+{
+    QVector<qint32> src;
+    if (!m_state)
+        return src;
+    const QVector<jr::Op> ops = enabledOps();
+    QVector<jr_op> cOps;
+    for (const jr::Op &op : ops) {
+        jr_op c;
+        c.type = op.type;
+        c.scope = op.scope.toC();
+        c.a = op.a;
+        c.b = op.b;
+        c.coefs = op.coefs.isEmpty() ? nullptr : reinterpret_cast<const int16_t *>(op.coefs.constData());
+        c.coef_count = size_t(op.coefs.size()) / sizeof(qint16);
+        cOps.append(c);
+    }
+    const jr_info ci = m_base.coefs->raw()->info;
+    src.resize(qsizetype(m_base.info.mcuCount()) * m_base.info.blocksPerMcu);
+    jr_trace(&ci, cOps.constData(), size_t(cOps.size()), src.data(), nullptr, nullptr, 0);
+    return src;
+}
+
+QByteArray ImageDocument::provenance() const
+{
+    if (!m_state)
+        return QByteArray();
+    const jr::Info &info = m_base.info;
+    const int mcus = info.mcuCount();
+    QByteArray flags(mcus, '\0');
+
+    const QVector<jr::Op> ops = enabledOps(); // keeps the C ops' borrowed pointers alive
+    bool reencoded = false;
+    for (const RepairStep &s : m_steps)
+        reencoded = reencoded || (s.enabled && s.kind == RepairStep::Kind::AutoColor);
+    QVector<jr_op> cOps;
+    for (const jr::Op &op : ops) {
+        jr_op c;
+        c.type = op.type;
+        c.scope = op.scope.toC();
+        c.a = op.a;
+        c.b = op.b;
+        c.coefs = op.coefs.isEmpty() ? nullptr : reinterpret_cast<const int16_t *>(op.coefs.constData());
+        c.coef_count = size_t(op.coefs.size()) / sizeof(qint16);
+        cOps.append(c);
+    }
+    const jr_info ci = m_base.coefs->raw()->info;
+    QVector<qint32> src(qsizetype(mcus) * info.blocksPerMcu);
+    jr_trace(&ci, cOps.constData(), size_t(cOps.size()), src.data(),
+             reinterpret_cast<uint8_t *>(flags.data()), nullptr, 0);
+
+    // An MCU the damaged stream never reached decodes to all-zero
+    // coefficients: libjpeg fills what it cannot read with zeros. Traced back
+    // through the moves to wherever it came from.
+    const int per = info.blocksPerMcu * 64;
+    const qint16 *base = m_base.coefs->mcu(0);
+    for (int m = 0; m < mcus; ++m) {
+        const qint32 from = src[qsizetype(m) * info.blocksPerMcu];
+        if (from >= 0) {
+            const qint16 *blk = base + qsizetype(from / info.blocksPerMcu) * per;
+            bool empty = true;
+            for (int i = 0; i < per && empty; ++i)
+                empty = blk[i] == 0;
+            if (empty)
+                flags[m] = char(quint8(flags[m]) | kNoData);
+        }
+        if (reencoded)
+            flags[m] = char(quint8(flags[m]) | kReencoded);
+    }
+    return flags;
+}
+
+// ---------------------------------------------------------------------------
+// Export
+// ---------------------------------------------------------------------------
+
+std::optional<QByteArray> ImageDocument::exportBytes(QString *error, const ExportOptions &options) const
+{
+    if (!m_state) {
         if (error)
             *error = tr("There is no image to export.");
-        return false;
+        return std::nullopt;
     }
+    auto bytes = m_state->write(m_base.bytes, error);
+    if (!bytes)
+        return std::nullopt;
+
+    const bool changed = !m_steps.isEmpty() || isReconstruction();
+    if (options.refreshThumbnail && changed && exif::thumbnail(*bytes)) {
+        // The old thumbnail shows the picture before the repair.
+        const QImage full = m_rgb.toImage();
+        const QImage small = full.scaled(kThumbnailEdge, kThumbnailEdge, Qt::KeepAspectRatio,
+                                         Qt::SmoothTransformation)
+                                 .convertToFormat(QImage::Format_RGB888);
+        jr::Samples thumb;
+        thumb.width = small.width();
+        thumb.height = small.height();
+        thumb.data.resize(qsizetype(thumb.width) * thumb.height * 3);
+        for (int y = 0; y < thumb.height; ++y)
+            std::memcpy(thumb.pixel(0, y), small.constScanLine(y), size_t(thumb.width) * 3);
+        if (auto encoded = jr::encodeRgb(thumb, kThumbnailQuality, QByteArray(), nullptr))
+            *bytes = exif::withThumbnail(*bytes, *encoded);
+    }
+    // A transplanted header brings the donor's frame size; the Exif, if the
+    // damaged file's own survived, should agree with what was written.
+    if (!m_donorPath.isEmpty())
+        *bytes = exif::withPixelDimensions(*bytes, m_base.info.width, m_base.info.height);
+
+    if (options.keepTrailer && m_trailer.keepOnExport()) {
+        const QByteArray tail = m_raw.mid(m_trailer.offset, m_trailer.length);
+        if (m_trailer.kind == jpegfile::TrailerKind::Mpf)
+            jpegfile::fixMpfOffsets(*bytes, m_raw, m_trailer.offset);
+        *bytes += tail;
+    }
+    return bytes;
+}
+
+bool ImageDocument::exportTo(const QString &path, QString *error, const ExportOptions &options)
+{
+    const auto bytes = exportBytes(error, options);
+    if (!bytes)
+        return false;
 
     QSaveFile file(path);
     if (!file.open(QIODevice::WriteOnly)) {
@@ -154,16 +539,14 @@ bool ImageDocument::exportTo(const QString &path, QString *error)
             *error = tr("Could not write %1: %2").arg(path, file.errorString());
         return false;
     }
-    if (file.write(m_rendered) != m_rendered.size() || !file.commit()) {
+    if (file.write(*bytes) != bytes->size() || !file.commit()) {
         if (error)
             *error = tr("Could not write %1: %2").arg(path, file.errorString());
         return false;
     }
 
     // The document goes on belonging to the file it was opened from, whatever
-    // the export was called. Retargeting it here -- which is what Save As used
-    // to do -- would point the session's project file at its own output and
-    // leave the damaged original with no record of the repair.
+    // the export was called.
     m_exportedIndex = m_index;
     applyOriginalTimestamps(path);
     return true;
@@ -181,8 +564,7 @@ void ImageDocument::applyOriginalTimestamps(const QString &path) const
     if (!file.open(QIODevice::ReadWrite))
         return;
     // Best effort, and deliberately quiet: creation time in particular is not
-    // settable on every platform, and a repair that wrote its pixels correctly
-    // should not be reported as a failure over a file date.
+    // settable on every platform.
     if (m_originalCreated.isValid())
         file.setFileTime(m_originalCreated, QFileDevice::FileBirthTime);
     if (m_originalAccessed.isValid())
@@ -195,75 +577,9 @@ QString ImageDocument::fileName() const
     return m_filePath.isEmpty() ? QString() : QFileInfo(m_filePath).fileName();
 }
 
-const jr::Samples &ImageDocument::ycbcr() const
-{
-    if (!m_ycbcr) {
-        auto decoded = jr::decodeYCbCr(m_rendered);
-        m_ycbcr = decoded ? *decoded : jr::Samples{};
-    }
-    return *m_ycbcr;
-}
-
 // ---------------------------------------------------------------------------
-// Rendering the recipe
+// Editing the recipe
 // ---------------------------------------------------------------------------
-
-std::optional<QByteArray> ImageDocument::render(const QVector<RepairStep> &steps,
-                                                QString *error) const
-{
-    QByteArray bytes = m_original;
-    QVector<jr::Op> pending;
-
-    const auto flush = [&bytes, &pending, error]() -> bool {
-        if (pending.isEmpty())
-            return true;
-        auto result = jr::apply(bytes, pending, error);
-        if (!result)
-            return false;
-        bytes = *result;
-        pending.clear();
-        return true;
-    };
-
-    for (const RepairStep &step : steps) {
-        if (!step.enabled)
-            continue;
-
-        if (step.kind == RepairStep::Kind::Ops) {
-            pending += step.ops;
-            continue;
-        }
-
-        // Auto color reads pixels, so everything queued has to be real bytes
-        // before it runs. This is the one place the chain breaks, and it is
-        // also the one step that already costs a generation.
-        if (!flush())
-            return std::nullopt;
-        const jr::Samples decoded = jr::decodeRgb(bytes, error).value_or(jr::Samples{});
-        if (!decoded.isValid())
-            return std::nullopt;
-        auto encoded = jr::encodeRgb(autocolor::autoCorrect(decoded), autocolor::kQuality, bytes,
-                                     error);
-        if (!encoded)
-            return std::nullopt;
-        bytes = *encoded;
-    }
-
-    if (!flush())
-        return std::nullopt;
-    return bytes;
-}
-
-bool ImageDocument::adoptRendered(const QByteArray &jpeg, QString *error)
-{
-    auto decoded = jr::decodeRgb(jpeg, error);
-    if (!decoded)
-        return false;
-    m_rendered = jpeg;
-    m_rgb = *decoded;
-    m_ycbcr.reset();
-    return true;
-}
 
 bool ImageDocument::commitSteps(const QVector<RepairStep> &next, QString *error)
 {
@@ -272,11 +588,7 @@ bool ImageDocument::commitSteps(const QVector<RepairStep> &next, QString *error)
             *error = tr("There is no image to repair.");
         return false;
     }
-
-    auto rendered = render(next, error);
-    if (!rendered)
-        return false;
-    if (!adoptRendered(*rendered, error))
+    if (!show(next, error))
         return false;
 
     // A new edit discards anything that was redoable.
@@ -286,10 +598,6 @@ bool ImageDocument::commitSteps(const QVector<RepairStep> &next, QString *error)
     m_steps = next;
     return true;
 }
-
-// ---------------------------------------------------------------------------
-// Editing the recipe
-// ---------------------------------------------------------------------------
 
 bool ImageDocument::addOps(const QVector<jr::Op> &ops, const QString &description, QString *error)
 {
@@ -311,6 +619,25 @@ bool ImageDocument::addAutoColor(const QString &description, QString *error)
     step.kind = RepairStep::Kind::AutoColor;
     step.description = description;
     next.append(step);
+    return commitSteps(next, error);
+}
+
+bool ImageDocument::addByteEdits(const QVector<ByteEdit> &edits, const QString &description,
+                                 QString *error)
+{
+    if (edits.isEmpty())
+        return true;
+    QVector<RepairStep> next = m_steps;
+    RepairStep step;
+    step.kind = RepairStep::Kind::Bytes;
+    step.edits = edits;
+    step.description = description;
+    int at = 0;
+    for (int i = 0; i < next.size(); ++i) {
+        if (next[i].kind == RepairStep::Kind::Bytes)
+            at = i + 1;
+    }
+    next.insert(at, step);
     return commitSteps(next, error);
 }
 
@@ -338,6 +665,17 @@ bool ImageDocument::moveStep(int from, int to, QString *error)
 {
     if (from < 0 || from >= m_steps.size() || to < 0 || to >= m_steps.size() || from == to)
         return false;
+    // Byte edits run before everything else whatever the order says, so they
+    // only reorder among themselves; letting one sit after a coefficient step
+    // would make the list say something the replay does not do.
+    const bool bytesFrom = m_steps.at(from).kind == RepairStep::Kind::Bytes;
+    const bool bytesTo = m_steps.at(to).kind == RepairStep::Kind::Bytes;
+    if (bytesFrom != bytesTo) {
+        if (error)
+            *error = tr("Byte edits are always applied before coefficient steps, so they stay at "
+                        "the top of the list.");
+        return false;
+    }
     QVector<RepairStep> next = m_steps;
     next.move(from, to);
     return commitSteps(next, error);
@@ -350,23 +688,26 @@ bool ImageDocument::clearSteps(QString *error)
     return commitSteps(QVector<RepairStep>{}, error);
 }
 
-bool ImageDocument::adoptSteps(const QVector<RepairStep> &steps, QString *error)
+bool ImageDocument::adoptSteps(const QVector<RepairStep> &steps, QString *error,
+                               const QVector<QVector<RepairStep>> &history, int historyIndex)
 {
     if (!isOpen()) {
         if (error)
             *error = tr("There is no image to repair.");
         return false;
     }
-
-    auto rendered = render(steps, error);
-    if (!rendered)
-        return false;
-    if (!adoptRendered(*rendered, error))
+    if (!show(steps, error))
         return false;
 
     m_steps = steps;
-    m_history = {steps};
-    m_index = 0;
+    if (!history.isEmpty() && historyIndex >= 0 && historyIndex < history.size()
+        && history.at(historyIndex) == steps) {
+        m_history = history;
+        m_index = historyIndex;
+    } else {
+        m_history = {steps};
+        m_index = 0;
+    }
     m_exportedIndex = -1;
     return true;
 }
@@ -376,8 +717,7 @@ bool ImageDocument::undo()
     if (!canUndo())
         return false;
     const int target = m_index - 1;
-    auto rendered = render(m_history.at(target), nullptr);
-    if (!rendered || !adoptRendered(*rendered, nullptr))
+    if (!show(m_history.at(target), nullptr))
         return false;
     m_index = target;
     m_steps = m_history.at(target);
@@ -389,8 +729,7 @@ bool ImageDocument::redo()
     if (!canRedo())
         return false;
     const int target = m_index + 1;
-    auto rendered = render(m_history.at(target), nullptr);
-    if (!rendered || !adoptRendered(*rendered, nullptr))
+    if (!show(m_history.at(target), nullptr))
         return false;
     m_index = target;
     m_steps = m_history.at(target);
@@ -399,22 +738,5 @@ bool ImageDocument::redo()
 
 void ImageDocument::clear()
 {
-    m_filePath.clear();
-    m_donorPath.clear();
-    m_donorOffset = 0;
-    m_isReconstruction = false;
-    m_salvageMode = jr::SalvageMode::Truncate;
-    m_original.clear();
-    m_scanTrim.reset();
-    m_steps.clear();
-    m_history.clear();
-    m_index = -1;
-    m_exportedIndex = -1;
-    m_originalCreated = QDateTime();
-    m_originalModified = QDateTime();
-    m_originalAccessed = QDateTime();
-    m_info = jr::Info{};
-    m_rendered.clear();
-    m_rgb = jr::Samples{};
-    m_ycbcr.reset();
+    *this = ImageDocument();
 }
