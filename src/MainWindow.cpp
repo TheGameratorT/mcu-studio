@@ -51,6 +51,7 @@
 
 #include <cmath>
 
+#include "AiFillDialog.h"
 #include "AnalysisDock.h"
 #include "AutoColor.h"
 #include "BatchDialog.h"
@@ -195,6 +196,20 @@ void MainWindow::buildActions()
            "any format. Compresses only those MCUs."));
     connect(m_fillReferenceAction, &QAction::triggered, this, &MainWindow::onFillFromReference);
 
+    m_aiFillAction = new QAction(tr("A&I Fill…"), this);
+    m_aiFillAction->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_I));
+    m_aiFillAction->setToolTip(
+        tr("Have a model make up content for the MCUs in scope from the rest of the picture, "
+           "for damage no other copy of the photograph can fill. Works on a selection in "
+           "several pieces (Ctrl+drag adds one). Compresses only those MCUs."));
+    connect(m_aiFillAction, &QAction::triggered, this, &MainWindow::onAiFill);
+
+    m_selectDamagedAction = new QAction(tr("Select All &Damaged MCUs"), this);
+    m_selectDamagedAction->setToolTip(
+        tr("Selects every MCU the damage map scores as damaged. Ctrl+drag afterward to add "
+           "what it missed, or to take away what it should not have picked."));
+    connect(m_selectDamagedAction, &QAction::triggered, this, &MainWindow::onSelectDamaged);
+
     m_compareAction = new QAction(tr("Show &Original"), this);
     m_compareAction->setCheckable(true);
     m_compareAction->setShortcut(QKeySequence(Qt::Key_Backslash));
@@ -296,8 +311,10 @@ void MainWindow::buildUi()
     editMenu->addAction(m_pasteInsertAction);
     editMenu->addSeparator();
     editMenu->addAction(m_fillReferenceAction);
+    editMenu->addAction(m_aiFillAction);
     editMenu->addSeparator();
     editMenu->addAction(m_selectAllAction);
+    editMenu->addAction(m_selectDamagedAction);
     editMenu->addAction(m_clearSelectionAction);
 
     QMenu *viewMenu = menuBar()->addMenu(tr("&View"));
@@ -873,6 +890,14 @@ QGroupBox *MainWindow::buildBlockGroup()
         fillReference->setEnabled(m_fillReferenceAction->isEnabled());
     });
     layout->addWidget(fillReference);
+
+    QPushButton *aiFill = new QPushButton(tr("AI fill…"), box);
+    aiFill->setToolTip(m_aiFillAction->toolTip());
+    connect(aiFill, &QPushButton::clicked, m_aiFillAction, &QAction::trigger);
+    connect(m_aiFillAction, &QAction::changed, aiFill, [this, aiFill] {
+        aiFill->setEnabled(m_aiFillAction->isEnabled());
+    });
+    layout->addWidget(aiFill);
 
     return box;
 }
@@ -1834,7 +1859,7 @@ bool MainWindow::hasPendingEdit() const
 
 void MainWindow::nudgeShift(int mcus, int units)
 {
-    if (!m_doc.isOpen() || !requireSelection())
+    if (!m_doc.isOpen() || !requireSelection() || !requireSingleRun())
         return;
     m_pendingMcuShift += mcus;
     m_pendingUnitShift += units;
@@ -2074,7 +2099,7 @@ void MainWindow::onAutoColor()
 
 void MainWindow::onInsertMcus()
 {
-    if (!requireImage() || !requireSelection())
+    if (!requireImage() || !requireSelection() || !requireSingleRun())
         return;
     int row = 0, col = 0;
     m_grid->anchorBlock(&row, &col);
@@ -2085,7 +2110,7 @@ void MainWindow::onInsertMcus()
 
 void MainWindow::onDeleteMcus()
 {
-    if (!requireImage() || !requireSelection())
+    if (!requireImage() || !requireSelection() || !requireSingleRun())
         return;
     int row = 0, col = 0;
     m_grid->anchorBlock(&row, &col);
@@ -2096,7 +2121,7 @@ void MainWindow::onDeleteMcus()
 
 void MainWindow::onInsertUnits()
 {
-    if (!requireImage() || !requireSelection())
+    if (!requireImage() || !requireSelection() || !requireSingleRun())
         return;
     int row = 0, col = 0;
     m_grid->anchorBlock(&row, &col);
@@ -2111,7 +2136,7 @@ void MainWindow::onInsertUnits()
 
 void MainWindow::onDeleteUnits()
 {
-    if (!requireImage() || !requireSelection())
+    if (!requireImage() || !requireSelection() || !requireSingleRun())
         return;
     int row = 0, col = 0;
     m_grid->anchorBlock(&row, &col);
@@ -2141,7 +2166,7 @@ void MainWindow::onCopyBlocks()
 
 void MainWindow::onCopySelection()
 {
-    if (!requireImage() || !requireSelection())
+    if (!requireImage() || !requireSelection() || !requireSingleRun())
         return;
     int row = 0, col = 0;
     m_grid->anchorBlock(&row, &col);
@@ -2290,6 +2315,61 @@ void MainWindow::onFillFromReference()
             .arg(dialog.wasScaled()
                      ? tr(" The reference was scaled to this file's dimensions on the way in.")
                      : QString()));
+}
+
+void MainWindow::onAiFill()
+{
+    if (!requireImage() || !requireSelection())
+        return;
+
+    // Always the selected MCUs themselves, whatever the scope box says: "to
+    // the end of the image" is a way to say where a shift applies, not a
+    // region anyone means to have invented.
+    const QByteArray mask = m_grid->selectionMask();
+    if (!fill::planFor(mask, m_doc.info()).isValid()) {
+        showError(tr("Nothing to fill"), tr("No MCUs are selected."));
+        return;
+    }
+
+    AiFillDialog dialog(m_doc.baseBytes(), m_doc.info(), m_doc.rgb(), mask, this);
+    if (dialog.exec() != QDialog::Accepted)
+        return;
+
+    if (!commit({dialog.op()}, tr("AI fill of %1 MCU(s) in %2 region(s), with %3.")
+                                   .arg(dialog.mcuCount())
+                                   .arg(dialog.regionCount())
+                                   .arg(dialog.providerName())))
+        return;
+
+    log(tr("Those MCUs now hold content a model invented from the rest of the picture, "
+           "compressed with this file's own quantization tables; every MCU outside them keeps "
+           "its exact coefficients."));
+}
+
+void MainWindow::onSelectDamaged()
+{
+    if (!requireImage())
+        return;
+    if (!m_damage.isValid()) {
+        const QVector<qint32> src = m_doc.unitSources();
+        m_damage = analysis::damage(m_doc.info(), m_doc.ycbcr(), &m_analysisDock->map(), &src);
+    }
+    QByteArray mask(qsizetype(m_doc.info().mcuCount()), '\0');
+    int count = 0;
+    for (int m = 0; m < m_damage.score.size() && m < mask.size(); ++m) {
+        if (m_damage.score[m] >= 0.5f) {
+            mask[m] = '\1';
+            ++count;
+        }
+    }
+    if (count == 0) {
+        log(tr("No MCU looks damaged."));
+        return;
+    }
+    m_grid->setSelectionMask(mask);
+    log(tr("Selected %1 MCU(s) that look damaged. Ctrl+drag to add to the selection or to "
+           "take away from it.")
+            .arg(count));
 }
 
 void MainWindow::updateClipboardInfo()
@@ -2567,6 +2647,8 @@ void MainWindow::updateActionStates()
     // nothing left to select from gets filled.
     m_fillReferenceAction->setEnabled(
         open && (selection || scopeChoice() == ScopeChoice::WholeImage));
+    m_aiFillAction->setEnabled(selection);
+    m_selectDamagedAction->setEnabled(open);
 
     m_scopeCombo->setEnabled(open);
     for (int c = 0; c < 3; ++c) {
@@ -2655,12 +2737,16 @@ void MainWindow::updateSelectionInfo()
     m_grid->lastBlock(&lastRow, &lastCol);
     const int count = m_grid->selectedCount();
 
-    m_selectionLabel->setText(tr("%1 MCU(s), from row %2 col %3 to row %4 col %5.")
-                                  .arg(count)
-                                  .arg(firstRow)
-                                  .arg(firstCol)
-                                  .arg(lastRow)
-                                  .arg(lastCol));
+    const int runs = m_grid->runCount();
+    QString text = tr("%1 MCU(s), from row %2 col %3 to row %4 col %5.")
+                       .arg(count)
+                       .arg(firstRow)
+                       .arg(firstCol)
+                       .arg(lastRow)
+                       .arg(lastCol);
+    if (runs > 1)
+        text += QLatin1Char(' ') + tr("In %1 separate runs.").arg(runs);
+    m_selectionLabel->setText(text);
 
     if (count > kMaxMeasuredMcus) {
         m_selectionColorLabel->setText(tr("Selection too large to measure."));
@@ -3094,11 +3180,23 @@ bool MainWindow::requireImage()
     return false;
 }
 
+bool MainWindow::requireSingleRun()
+{
+    if (m_grid->runCount() <= 1)
+        return true;
+    QMessageBox::information(this, tr("Selection in several pieces"),
+                             tr("This works from one place in the stream, and the selection "
+                                "is in %1 separate runs. Select a single run first.")
+                                 .arg(m_grid->runCount()));
+    return false;
+}
+
 bool MainWindow::requireSelection()
 {
     if (m_grid->hasSelection())
         return true;
     QMessageBox::information(this, tr("No selection"),
-                             tr("Select at least one MCU first. Drag across the image."));
+                             tr("Select at least one MCU first. Drag across the image; Ctrl+drag adds "
+                                "another run."));
     return false;
 }

@@ -62,6 +62,7 @@ Everything below was written against commit `7f67cf3`. Since then:
 | F35 split MainWindow | Partly: new features live in their own files (analysis dock, dialogs, core modules); MainWindow itself was not broken up. |
 | F36 CI matrix | Done: Linux, Windows, macOS, fuzzing. |
 | F37 translations | Not done. |
+| F38 AI fill | Done: multi-run selection, *Select All Damaged MCUs*, and inpainting through a local LaMa model or an online image service, previewed before it is committed. Filled MCUs are not told apart from reference fills in the provenance overlay. |
 
 ---
 

@@ -105,6 +105,26 @@ shipped by your distribution or vendor. Nothing from it is redistributed here.
 
 ---
 
+## ONNX Runtime — optional, linked, not bundled
+
+Used when found at build time, to run AI fill's local model. MIT License; see
+<https://github.com/microsoft/onnxruntime>. Not redistributed here.
+
+---
+
+## LaMa inpainting model — downloaded on request, not bundled
+
+* Model: "Resolution-robust Large Mask Inpainting with Fourier Convolutions"
+  (Suvorov et al.), <https://github.com/advimman/lama>, Apache License 2.0
+* ONNX export fetched by the program when the user asks for it:
+  <https://huggingface.co/Carve/LaMa-ONNX> (`lama_fp32.onnx`), Apache License 2.0
+
+The model file is not part of this repository or of any package built from it.
+The program downloads it only on request and checks it against a known
+SHA-256 before keeping it.
+
+---
+
 ## Qt 6 — linked, not bundled
 
 Used under the GNU Lesser General Public License v3.0. Qt itself is not

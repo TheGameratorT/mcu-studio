@@ -36,6 +36,7 @@ void McuGridItem::setImage(const QPixmap &pixmap, const jr::Info &info)
     m_pixmap = pixmap;
     m_info = info;
     clearSelection();
+    m_unionDirty = true;
     m_referenceRow = m_referenceCol = -1;
     m_targetRow = m_targetCol = -1;
     m_hoverRow = m_hoverCol = -1;
@@ -79,11 +80,63 @@ void McuGridItem::setSelectionVisible(bool visible)
     update();
 }
 
+bool McuGridItem::hasSelection() const
+{
+    if (m_keptMask.isEmpty())
+        return hasActiveRun() && !m_subtract;
+    return unionMask().contains('\1');
+}
+
+const QByteArray &McuGridItem::unionMask() const
+{
+    if (!m_unionDirty)
+        return m_unionMask;
+
+    const qsizetype count = m_info.isValid() ? qsizetype(m_info.mcusY) * m_info.mcusX : 0;
+    if (m_keptMask.size() == count)
+        m_unionMask = m_keptMask;
+    else
+        m_unionMask = QByteArray(count, '\0');
+    if (hasActiveRun() && count > 0) {
+        const int lo = std::min(m_selStart, m_selEnd);
+        const int hi = std::max(m_selStart, m_selEnd);
+        std::fill(m_unionMask.begin() + lo, m_unionMask.begin() + hi + 1,
+                  m_subtract ? '\0' : '\1');
+    }
+    m_unionDirty = false;
+    return m_unionMask;
+}
+
+void McuGridItem::selectionEdited()
+{
+    m_unionDirty = true;
+    update();
+    emit selectionChanged();
+}
+
+void McuGridItem::keepActiveRun()
+{
+    QByteArray merged = unionMask();
+    m_selStart = m_selEnd = -1;
+    m_subtract = false;
+    m_keptMask = merged.contains('\1') ? merged : QByteArray();
+    m_unionDirty = true;
+}
+
 int McuGridItem::selectedCount() const
 {
-    if (!hasSelection())
-        return 0;
-    return std::abs(m_selEnd - m_selStart) + 1;
+    return int(unionMask().count('\1'));
+}
+
+int McuGridItem::runCount() const
+{
+    const QByteArray &mask = unionMask();
+    int runs = 0;
+    for (qsizetype i = 0; i < mask.size(); ++i) {
+        if (mask.at(i) && (i == 0 || !mask.at(i - 1)))
+            ++runs;
+    }
+    return runs;
 }
 
 void McuGridItem::fromIndex(int index, int *row, int *col) const
@@ -98,17 +151,19 @@ void McuGridItem::fromIndex(int index, int *row, int *col) const
 
 bool McuGridItem::anchorBlock(int *row, int *col) const
 {
-    if (!hasSelection())
+    const qsizetype first = unionMask().indexOf('\1');
+    if (first < 0)
         return false;
-    fromIndex(std::min(m_selStart, m_selEnd), row, col);
+    fromIndex(int(first), row, col);
     return true;
 }
 
 bool McuGridItem::lastBlock(int *row, int *col) const
 {
-    if (!hasSelection())
+    const qsizetype last = unionMask().lastIndexOf('\1');
+    if (last < 0)
         return false;
-    fromIndex(std::max(m_selStart, m_selEnd), row, col);
+    fromIndex(int(last), row, col);
     return true;
 }
 
@@ -116,37 +171,31 @@ QByteArray McuGridItem::selectionMask() const
 {
     if (!m_info.isValid())
         return QByteArray();
-
-    QByteArray mask(qsizetype(m_info.mcusY) * m_info.mcusX, '\0');
-    if (!hasSelection())
-        return mask;
-
-    const int lo = std::min(m_selStart, m_selEnd);
-    const int hi = std::max(m_selStart, m_selEnd);
-    std::fill(mask.begin() + lo, mask.begin() + hi + 1, '\1');
-    return mask;
+    return unionMask();
 }
 
 QVector<QRect> McuGridItem::selectionRects() const
 {
     QVector<QRect> rects;
-    if (!hasSelection() || !m_info.isValid())
+    if (!m_info.isValid())
         return rects;
 
-    int anchorRow, anchorCol, lastRow, lastCol;
-    anchorBlock(&anchorRow, &anchorCol);
-    lastBlock(&lastRow, &lastCol);
-
+    const QByteArray &mask = unionMask();
     const QRect bounds(0, 0, m_info.width, m_info.height);
-    for (int row = anchorRow; row <= lastRow; ++row) {
-        int firstCol, endCol;
-        if (!rowSpan(row, &firstCol, &endCol))
-            continue;
-        const QRect r(firstCol * m_info.mcuWidth, row * m_info.mcuHeight,
-                      (endCol - firstCol + 1) * m_info.mcuWidth, m_info.mcuHeight);
-        const QRect clipped = r.intersected(bounds);
-        if (!clipped.isEmpty())
-            rects.append(clipped);
+    for (int row = 0; row < m_info.mcusY; ++row) {
+        const char *line = mask.constData() + qsizetype(row) * m_info.mcusX;
+        for (int col = 0; col < m_info.mcusX; ++col) {
+            if (!line[col])
+                continue;
+            const int firstCol = col;
+            while (col + 1 < m_info.mcusX && line[col + 1])
+                ++col;
+            const QRect r(firstCol * m_info.mcuWidth, row * m_info.mcuHeight,
+                          (col - firstCol + 1) * m_info.mcuWidth, m_info.mcuHeight);
+            const QRect clipped = r.intersected(bounds);
+            if (!clipped.isEmpty())
+                rects.append(clipped);
+        }
     }
     return rects;
 }
@@ -155,19 +204,21 @@ void McuGridItem::selectAll()
 {
     if (!m_info.isValid())
         return;
+    m_keptMask.clear();
+    m_subtract = false;
     m_selStart = 0;
     m_selEnd = m_info.mcuCount() - 1;
-    update();
-    emit selectionChanged();
+    selectionEdited();
 }
 
 void McuGridItem::clearSelection()
 {
-    if (!hasSelection())
+    if (!hasActiveRun() && m_keptMask.isEmpty())
         return;
+    m_keptMask.clear();
+    m_subtract = false;
     m_selStart = m_selEnd = -1;
-    update();
-    emit selectionChanged();
+    selectionEdited();
 }
 
 void McuGridItem::selectRange(int startRow, int startCol, int endRow, int endCol)
@@ -175,10 +226,25 @@ void McuGridItem::selectRange(int startRow, int startCol, int endRow, int endCol
     if (!m_info.isValid())
         return;
     const int last = m_info.mcuCount() - 1;
+    m_keptMask.clear();
+    m_subtract = false;
     m_selStart = std::clamp(toIndex(startRow, startCol), 0, last);
     m_selEnd = std::clamp(toIndex(endRow, endCol), 0, last);
-    update();
-    emit selectionChanged();
+    selectionEdited();
+}
+
+void McuGridItem::setSelectionMask(const QByteArray &mask)
+{
+    if (!m_info.isValid() || mask.size() != qsizetype(m_info.mcusY) * m_info.mcusX)
+        return;
+    m_selStart = m_selEnd = -1;
+    m_subtract = false;
+    m_keptMask = mask;
+    for (char &c : m_keptMask)
+        c = c ? '\1' : '\0';
+    if (!m_keptMask.contains('\1'))
+        m_keptMask.clear();
+    selectionEdited();
 }
 
 void McuGridItem::setPickMode(PickMode mode)
@@ -210,25 +276,6 @@ bool McuGridItem::blockAt(const QPointF &pos, int *row, int *col) const
     *row = r;
     *col = c;
     return true;
-}
-
-bool McuGridItem::rowSpan(int row, int *firstCol, int *lastCol) const
-{
-    if (!hasSelection())
-        return false;
-
-    const int lo = std::min(m_selStart, m_selEnd);
-    const int hi = std::max(m_selStart, m_selEnd);
-    int loRow, loCol, hiRow, hiCol;
-    fromIndex(lo, &loRow, &loCol);
-    fromIndex(hi, &hiRow, &hiCol);
-
-    if (row < loRow || row > hiRow)
-        return false;
-
-    *firstCol = (row == loRow) ? loCol : 0;
-    *lastCol = (row == hiRow) ? hiCol : m_info.mcusX - 1;
-    return *firstCol <= *lastCol;
 }
 
 void McuGridItem::paint(QPainter *painter, const QStyleOptionGraphicsItem *option, QWidget *)
@@ -279,14 +326,20 @@ void McuGridItem::paintSelection(QPainter *painter, const QRectF &exposed) const
     const int firstRow = std::max(0, int(exposed.top()) / m_info.mcuHeight);
     const int lastRow = std::min(m_info.mcusY - 1, int(exposed.bottom()) / m_info.mcuHeight);
 
+    const QByteArray &mask = unionMask();
     painter->setPen(Qt::NoPen);
     painter->setBrush(kSelectionFill);
     for (int row = firstRow; row <= lastRow; ++row) {
-        int firstCol, lastCol;
-        if (!rowSpan(row, &firstCol, &lastCol))
-            continue;
-        painter->drawRect(QRectF(firstCol * m_info.mcuWidth, row * m_info.mcuHeight,
-                                 (lastCol - firstCol + 1) * m_info.mcuWidth, m_info.mcuHeight));
+        const char *line = mask.constData() + qsizetype(row) * m_info.mcusX;
+        for (int col = 0; col < m_info.mcusX; ++col) {
+            if (!line[col])
+                continue;
+            const int firstCol = col;
+            while (col + 1 < m_info.mcusX && line[col + 1])
+                ++col;
+            painter->drawRect(QRectF(firstCol * m_info.mcuWidth, row * m_info.mcuHeight,
+                                     (col - firstCol + 1) * m_info.mcuWidth, m_info.mcuHeight));
+        }
     }
 
     // A thin outline on the first and last block makes the range's direction
@@ -356,14 +409,22 @@ void McuGridItem::mousePressEvent(QGraphicsSceneMouseEvent *event)
     }
 
     const int index = toIndex(row, col);
-    if ((event->modifiers() & Qt::ShiftModifier) && hasSelection()) {
+    if ((event->modifiers() & Qt::ShiftModifier) && hasActiveRun()) {
         m_selEnd = index; // extend the existing range, keeping its anchor
+    } else if (event->modifiers() & Qt::ControlModifier) {
+        // Another run beside the ones already there; started on a selected
+        // MCU it takes MCUs away instead, which is how a selection is trimmed.
+        const bool wasSelected = unionMask().at(index) != 0;
+        keepActiveRun();
+        m_subtract = wasSelected;
+        m_selStart = m_selEnd = index;
     } else {
+        m_keptMask.clear();
+        m_subtract = false;
         m_selStart = m_selEnd = index;
     }
     m_dragging = true;
-    update();
-    emit selectionChanged();
+    selectionEdited();
     event->accept();
 }
 
@@ -377,8 +438,7 @@ void McuGridItem::mouseMoveEvent(QGraphicsSceneMouseEvent *event)
     const int index = toIndex(row, col);
     if (index != m_selEnd) {
         m_selEnd = index;
-        update();
-        emit selectionChanged();
+        selectionEdited();
     }
     event->accept();
 }
@@ -386,6 +446,10 @@ void McuGridItem::mouseMoveEvent(QGraphicsSceneMouseEvent *event)
 void McuGridItem::mouseReleaseEvent(QGraphicsSceneMouseEvent *event)
 {
     m_dragging = false;
+    // A removal is finished once the button is up; an added run stays active
+    // so Shift+click can still extend it.
+    if (m_subtract)
+        keepActiveRun();
     event->accept();
 }
 

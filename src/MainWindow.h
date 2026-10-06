@@ -103,6 +103,8 @@ private slots:
     void onPasteOver();
     void onPasteInsert();
     void onFillFromReference();
+    void onAiFill();
+    void onSelectDamaged();
 
     void onPreviewTimeout();
     void onPreviewReady();
@@ -154,6 +156,9 @@ private:
     void showError(const QString &title, const QString &message);
     bool requireImage();
     bool requireSelection();
+    // For the operations that work from one place in the stream onward, which
+    // a selection in several pieces does not name.
+    bool requireSingleRun();
 
     void loadIntoView();
     // Shared tail of every way of opening a file: clears what belonged to the
@@ -277,6 +282,8 @@ private:
     QAction *m_pasteOverAction = nullptr;
     QAction *m_pasteInsertAction = nullptr;
     QAction *m_fillReferenceAction = nullptr;
+    QAction *m_aiFillAction = nullptr;
+    QAction *m_selectDamagedAction = nullptr;
     QAction *m_compareAction = nullptr;
     QAction *m_nextDamageAction = nullptr;
     QAction *m_reportAction = nullptr;

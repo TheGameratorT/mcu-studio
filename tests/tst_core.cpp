@@ -7,7 +7,10 @@
 #include <QTest>
 
 #include <algorithm>
+#include <cmath>
+#include <cstring>
 
+#include "AiFill.h"
 #include "Analysis.h"
 #include "Bitstream.h"
 #include "DonorHeader.h"
@@ -17,6 +20,7 @@
 #include "JpegRepair.h"
 #include "JpegStructure.h"
 #include "ProjectFile.h"
+#include "ReferenceFill.h"
 #include "Report.h"
 #include "TestUtil.h"
 
@@ -47,6 +51,56 @@ qsizetype scanStart(const QByteArray &jpeg)
 {
     return jpegfile::walk(jpeg).scans.value(0).dataStart;
 }
+
+// Stands in for a model: paints the hole one flat color, optionally handing
+// the whole window back moved and tinted the way a model that redraws it does.
+class FakeProvider : public aifill::Provider
+{
+public:
+    int side = 128;
+    bool redraws = false;
+    int shiftX = 0, shiftY = 0;
+    double gain = 1.0, offset = 0.0;
+    int calls = 0;
+    QVector<QSize> sizes;
+
+    QString id() const override { return QStringLiteral("fake"); }
+    QString displayName() const override { return QStringLiteral("Fake"); }
+    bool available(QString *) const override { return true; }
+    bool sendsPictureOffMachine() const override { return false; }
+    bool usesPrompt() const override { return false; }
+    int tileSize() const override { return side; }
+    bool regeneratesContext() const override { return redraws; }
+
+    std::optional<QImage> inpaint(const aifill::Request &request, const std::function<bool()> &,
+                                  QString *) override
+    {
+        ++calls;
+        sizes.append(request.image.size());
+        QImage filled = request.image.convertToFormat(QImage::Format_RGB888);
+        for (int y = 0; y < filled.height(); ++y) {
+            for (int x = 0; x < filled.width(); ++x) {
+                if (request.mask.constScanLine(y)[x]) {
+                    uchar *p = filled.scanLine(y) + x * 3;
+                    p[0] = 200, p[1] = 40, p[2] = 90;
+                }
+            }
+        }
+        if (!redraws)
+            return filled;
+        QImage out(filled.size(), QImage::Format_RGB888);
+        for (int y = 0; y < out.height(); ++y) {
+            for (int x = 0; x < out.width(); ++x) {
+                const uchar *from = filled.constScanLine(qBound(0, y - shiftY, out.height() - 1))
+                    + qBound(0, x - shiftX, out.width() - 1) * 3;
+                uchar *to = out.scanLine(y) + x * 3;
+                for (int c = 0; c < 3; ++c)
+                    to[c] = uchar(qBound(0, int(std::lround(from[c] * gain + offset)), 255));
+            }
+        }
+        return out;
+    }
+};
 
 } // namespace
 
@@ -830,6 +884,159 @@ private slots:
         QVERIFY(quint8(flags[3 * info.mcusX + 5]) & JR_TRACE_MOVED);
         const QJsonObject r = report::build(doc, path, *doc.exportBytes(&error));
         QCOMPARE(r.value(QStringLiteral("mcus")).toObject().value(QStringLiteral("pastedOrSynthesized")).toInt(), 1);
+    }
+
+    // --- AI fill -------------------------------------------------------------
+
+    void aiFillTilesCoverTheSelectionOnce()
+    {
+        Spec spec;
+        spec.width = 401;
+        spec.height = 299;
+        const auto info = jr::probe(testutil::make(spec));
+        QVERIFY(info);
+        QByteArray mask(info->mcuCount(), '\0');
+        // A full-width strip, a blob, and the bottom right corner MCU, which
+        // hangs past the picture's edge.
+        for (int c = 0; c < info->mcusX; ++c)
+            mask[5 * info->mcusX + c] = 1;
+        for (int r = 10; r < 14; ++r)
+            for (int c = 3; c < 9; ++c)
+                mask[r * info->mcusX + c] = 1;
+        mask[info->mcuCount() - 1] = 1;
+        QCOMPARE(aifill::regions(mask, *info).size(), 3);
+
+        for (int side : {64, 128, 512}) {
+            const QVector<aifill::Tile> tiles = aifill::planTiles(mask, *info, side);
+            QByteArray seen(mask.size(), '\0');
+            const QRect picture(0, 0, info->width, info->height);
+            for (const aifill::Tile &tile : tiles) {
+                QVERIFY(picture.contains(tile.window));
+                QVERIFY(tile.window.width() <= side && tile.window.height() <= side);
+                for (int index : tile.mcus) {
+                    QVERIFY(mask.at(index));
+                    QVERIFY2(!seen.at(index), "an MCU was given to two windows");
+                    seen[index] = 1;
+                    const QRect mcu = QRect((index % info->mcusX) * info->mcuWidth,
+                                            (index / info->mcusX) * info->mcuHeight,
+                                            info->mcuWidth, info->mcuHeight)
+                                          .intersected(picture);
+                    QVERIFY(tile.window.contains(mcu));
+                }
+            }
+            QCOMPARE(seen, mask);
+        }
+    }
+
+    void aiFillTouchesOnlyTheSelection()
+    {
+        QTemporaryDir dir;
+        Spec spec;
+        spec.width = 401;
+        spec.height = 299;
+        const QString path = writeTemp(dir, QStringLiteral("a.jpg"), testutil::make(spec));
+        ImageDocument doc;
+        QString error;
+        QVERIFY(doc.load(path, &error));
+        const jr::Info info = doc.info();
+
+        QByteArray mask(info.mcuCount(), '\0');
+        for (int c = 2; c < info.mcusX - 1; ++c)
+            mask[4 * info.mcusX + c] = 1;
+        mask[9 * info.mcusX + 7] = 1;
+        mask[9 * info.mcusX + 8] = 1;
+
+        FakeProvider fake;
+        int lastDone = -1, lastTotal = -1;
+        const auto result = aifill::run(
+            fake, doc.rgb(), mask, info, QString(), 1,
+            [&](int done, int total) { lastDone = done, lastTotal = total; }, nullptr, &error);
+        QVERIFY2(result.has_value(), qPrintable(error));
+        QCOMPARE(result->tiles, fake.calls);
+        QCOMPARE(lastDone, lastTotal);
+        QCOMPARE(result->image.size(), QSize(info.width, info.height));
+
+        // Pixels: the model's color inside the selection, the render outside.
+        const jr::Samples before = doc.rgb();
+        for (int y = 0; y < info.height; ++y) {
+            for (int x = 0; x < info.width; ++x) {
+                const bool selected = mask.at((y / info.mcuHeight) * info.mcusX + x / info.mcuWidth);
+                const uchar *p = result->image.constScanLine(y) + x * 3;
+                if (selected)
+                    QVERIFY(p[0] == 200 && p[1] == 40 && p[2] == 90);
+                else
+                    QVERIFY(std::memcmp(p, before.pixel(x, y), 3) == 0);
+            }
+        }
+
+        // Coefficients: only the selected MCUs differ after the fill, and undo
+        // puts them back.
+        const QByteArray original = coefBytes(*doc.exportBytes(&error));
+        const auto aligned = fill::align(result->image, info, &error);
+        QVERIFY(aligned.has_value());
+        const auto op = fill::build(doc.baseBytes(), info, *aligned, mask, fill::planFor(mask, info),
+                                    QPoint(0, 0), &error);
+        QVERIFY2(op.has_value(), qPrintable(error));
+        QVERIFY(doc.addOps({*op}, QStringLiteral("ai"), &error));
+        const QByteArray filled = coefBytes(*doc.exportBytes(&error));
+        QCOMPARE(filled.size(), original.size());
+        const qsizetype perMcu = original.size() / info.mcuCount();
+        for (int m = 0; m < info.mcuCount(); ++m) {
+            const bool same = original.mid(m * perMcu, perMcu) == filled.mid(m * perMcu, perMcu);
+            QCOMPARE(same, !mask.at(m));
+        }
+        QVERIFY(doc.undo());
+        QCOMPARE(coefBytes(*doc.exportBytes(&error)), original);
+    }
+
+    void aiFillFitsARedrawnWindowBack()
+    {
+        Spec spec;
+        spec.width = 256;
+        spec.height = 256;
+        const QByteArray px = testutil::pixels(spec);
+        QImage original(spec.width, spec.height, QImage::Format_RGB888);
+        for (int y = 0; y < spec.height; ++y)
+            std::memcpy(original.scanLine(y), px.constData() + qsizetype(y) * spec.width * 3,
+                        size_t(spec.width) * 3);
+        QImage mask(spec.width, spec.height, QImage::Format_Grayscale8);
+        mask.fill(0);
+        for (int y = 112; y < 144; ++y)
+            std::memset(mask.scanLine(y) + 64, 255, 128);
+
+        // The same picture, moved and recolored, as a model hands it back.
+        const int dx = 5, dy = -3;
+        QImage answer(original.size(), QImage::Format_RGB888);
+        for (int y = 0; y < spec.height; ++y) {
+            for (int x = 0; x < spec.width; ++x) {
+                const uchar *from = original.constScanLine(qBound(0, y - dy, spec.height - 1))
+                    + qBound(0, x - dx, spec.width - 1) * 3;
+                uchar *to = answer.scanLine(y) + x * 3;
+                for (int c = 0; c < 3; ++c)
+                    to[c] = uchar(qBound(0, int(std::lround(from[c] * 0.9 + 12)), 255));
+            }
+        }
+
+        aifill::Registration fit;
+        const QImage fitted = aifill::registerAnswer(original, answer, mask, &fit);
+        QCOMPARE(fit.dx, dx);
+        QCOMPARE(fit.dy, dy);
+        QVERIFY2(fit.residual < 2.0, qPrintable(QString::number(fit.residual)));
+        QVERIFY(fit.residual < aifill::kPoorResidual);
+        // Beside the hole it is the original again, to within rounding.
+        for (int x = 70; x < 186; x += 7) {
+            const uchar *a = fitted.constScanLine(105) + x * 3;
+            const uchar *o = original.constScanLine(105) + x * 3;
+            for (int c = 0; c < 3; ++c)
+                QVERIFY(std::abs(a[c] - o[c]) <= 3);
+        }
+
+        // An answer that already sits right is left where it is.
+        aifill::Registration none;
+        aifill::registerAnswer(original, original, mask, &none);
+        QCOMPARE(none.dx, 0);
+        QCOMPARE(none.dy, 0);
+        QVERIFY(none.residual < 0.5);
     }
 
     // --- Exif, carving ---------------------------------------------------------

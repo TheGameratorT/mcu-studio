@@ -7,6 +7,10 @@
 // MCU scan order, from an anchor block to a focus block, wrapping across
 // rows. That matches how JPEG damage actually runs -- corruption follows the
 // entropy-coded stream, not the picture's geometry.
+//
+// Damage also comes in more than one place, so a selection can hold several
+// such runs: Ctrl+drag adds one (or, started on a selected MCU, removes one).
+// The run being dragged is the active one; the others are kept as a mask.
 #pragma once
 
 #include <QByteArray>
@@ -38,9 +42,11 @@ public:
     bool selectionVisible() const { return m_selectionVisible; }
     void setSelectionVisible(bool visible);
 
-    bool hasSelection() const { return m_selStart >= 0 && m_selEnd >= 0; }
+    bool hasSelection() const;
     int selectedCount() const;
-    // First block of the range in scan order, which is where a
+    // How many separate scan-order runs the selection is made of.
+    int runCount() const;
+    // First block of the selection in scan order, which is where a
     // "from here onward" repair starts.
     bool anchorBlock(int *row, int *col) const;
     bool lastBlock(int *row, int *col) const;
@@ -52,6 +58,8 @@ public:
     void selectAll();
     void clearSelection();
     void selectRange(int startRow, int startCol, int endRow, int endCol);
+    // Selects exactly the MCUs set in `mask` (the selectionMask() layout).
+    void setSelectionMask(const QByteArray &mask);
 
     PickMode pickMode() const { return m_pickMode; }
     void setPickMode(PickMode mode);
@@ -79,8 +87,12 @@ private:
     bool blockAt(const QPointF &pos, int *row, int *col) const;
     int toIndex(int row, int col) const { return row * m_info.mcusX + col; }
     void fromIndex(int index, int *row, int *col) const;
-    // Columns of `row` inside the scan-order range, or an empty span.
-    bool rowSpan(int row, int *firstCol, int *lastCol) const;
+    bool hasActiveRun() const { return m_selStart >= 0 && m_selEnd >= 0; }
+    // Every selected MCU: the kept runs with the active one added or removed.
+    const QByteArray &unionMask() const;
+    void selectionEdited();
+    // Folds the active run into the kept ones, leaving no active run.
+    void keepActiveRun();
     void paintSelection(QPainter *painter, const QRectF &exposed) const;
     void paintGrid(QPainter *painter, const QRectF &exposed, qreal scale) const;
     void paintMark(QPainter *painter, int row, int col, const QColor &color) const;
@@ -94,6 +106,10 @@ private:
 
     int m_selStart = -1; // scan-order index of the anchor
     int m_selEnd = -1;   // scan-order index of the focus
+    bool m_subtract = false; // the active run removes instead of adding
+    QByteArray m_keptMask;   // runs added earlier; empty when there are none
+    mutable QByteArray m_unionMask;
+    mutable bool m_unionDirty = true;
     bool m_dragging = false;
 
     PickMode m_pickMode = PickMode::None;
