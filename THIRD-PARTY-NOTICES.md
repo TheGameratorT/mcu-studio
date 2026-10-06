@@ -105,7 +105,7 @@ shipped by your distribution or vendor. Nothing from it is redistributed here.
 
 ---
 
-## ONNX Runtime — optional, loaded at run time, bundled only in the Windows installer
+## ONNX Runtime — optional, loaded at run time, bundled in the Windows installer and the AppImage
 
 Built against its headers when they are found, and opened at run time if it
 is installed, to run AI fill's local model. MIT License, Copyright (c)
@@ -114,7 +114,9 @@ Microsoft Corporation; see <https://github.com/microsoft/onnxruntime>.
 Not part of this repository. The Windows installer carries it as MSYS2 builds
 it, with the libraries that build needs (ONNX and Abseil, Apache License 2.0;
 Protocol Buffers and RE2, BSD-3-Clause), and puts their license texts in the
-`licenses` folder beside the program.
+`licenses` folder beside the program. The AppImage carries the release the
+ONNX Runtime project publishes, with its `LICENSE` and `ThirdPartyNotices.txt`
+under `usr/share/doc/mcu-studio/onnxruntime`.
 
 ---
 

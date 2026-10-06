@@ -75,7 +75,7 @@ src/cli/                    mcu-studio-cli
 third_party/jpegrepair/     vendored jpegrepair (modified) and the preview decoder
 tests/                      the test suite
 fuzz/                       libFuzzer harnesses and their seed corpus
-packaging/                  desktop entry, icons, AUR PKGBUILD
+packaging/                  desktop entry, icons, AUR PKGBUILD, AppImage script
 installer/                  Windows NSIS installer
 docs/                       features, how it works, building, screenshots
 .github/workflows/          CI and releases

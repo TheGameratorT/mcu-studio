@@ -14,7 +14,8 @@ clone of it.
    ```
 
    CI checks the tag against the CMake version and refuses to release on a
-   mismatch, then builds the Windows installer and creates the GitHub release.
+   mismatch, then builds the Windows installer and the AppImage and creates
+   the GitHub release.
 
 2. Update this directory:
 

@@ -1,14 +1,16 @@
 # CI + releases.
 #
 # Every push/PR builds and tests Linux, Windows (including the Windows
-# installer, uploaded as a workflow artifact) and macOS, and fuzzes the parsers
-# for a few minutes. Releasing is just:
+# installer, uploaded as a workflow artifact) and macOS, packs the Linux
+# AppImage (also uploaded), and fuzzes the parsers for a few minutes.
+# Releasing is just:
 #
 #   git tag v1.2.3 && git push --tags
 #
 # The tag must match project(VERSION) in CMakeLists.txt (checked below); the
 # workflow then creates the GitHub release itself, with generated notes and the
-# installer attached. Linux users install from the AUR (packaging/aur).
+# installer and the AppImage attached. Arch users install from the AUR
+# (packaging/aur); the AppImage is for every other distribution.
 name: CI
 
 on:
@@ -78,6 +80,62 @@ jobs:
       run: |
         sudo apt-get install -y desktop-file-utils
         desktop-file-validate staged/usr/share/applications/mcu-studio.desktop
+
+  appimage:
+    # The oldest Ubuntu GitHub offers, not the latest: an AppImage runs only
+    # where glibc is at least as new as the build machine's, and this one's
+    # (2.35) is old enough for Debian 12, Ubuntu 22.04 and what came after.
+    runs-on: ubuntu-22.04
+    steps:
+    - uses: actions/checkout@v7
+    - name: Install Qt
+      uses: jurplel/install-qt-action@v4
+      with:
+        version: '6.8.*'
+        cache: true
+    - name: Install build tools
+      # Beyond what the build needs, the libraries Qt's X11 and Wayland
+      # plugins link: linuxdeploy copies them into the AppImage from here and
+      # stops if one is missing.
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y cmake ninja-build libjpeg-dev file \
+          libgl1-mesa-dev libegl1 libfontconfig1 libdbus-1-3 \
+          libxkbcommon0 libxkbcommon-x11-0 libxcb-cursor0 libxcb-icccm4 \
+          libxcb-image0 libxcb-keysyms1 libxcb-randr0 libxcb-render-util0 \
+          libxcb-shape0 libxcb-xinerama0 libxcb-xkb1 \
+          libwayland-client0 libwayland-cursor0 libwayland-egl1
+    - name: Build the AppImage
+      run: packaging/appimage/build.sh build-appimage
+    - name: Smoke-test the AppImage
+      # The file is unpacked rather than mounted (no FUSE here) and the
+      # program is started as a user would start it, from AppRun, so a
+      # library or Qt plugin missing from the bundle fails here. ONNX Runtime
+      # is not installed on this machine, so the test passing means the
+      # bundled copy opened; the test program runs from the unpacked tree
+      # because that is where the program looks for it.
+      run: |
+        cd build-appimage
+        ./McuStudio-*.AppImage --appimage-extract > /dev/null
+        QT_QPA_PLATFORM=offscreen squashfs-root/AppRun --version
+        QT_QPA_PLATFORM=offscreen squashfs-root/AppRun ../fuzz/corpus/444.jpg --screenshot "$PWD/screenshot.png"
+        test -s screenshot.png
+        squashfs-root/usr/bin/mcu-studio-cli info ../fuzz/corpus/baseline_rst.jpg
+        cp build/bin/mcu_tests squashfs-root/usr/bin/
+        MCU_STUDIO_EXPECT_ONNX=1 QT_QPA_PLATFORM=offscreen squashfs-root/usr/bin/mcu_tests localModelRuntime
+    - name: Upload AppImage artifact
+      uses: actions/upload-artifact@v7
+      with:
+        name: linux-appimage
+        path: build-appimage/McuStudio-*.AppImage
+    - name: Add to release
+      # The Windows job creates the same release; whichever job gets there
+      # second adds its file to it.
+      uses: softprops/action-gh-release@v3
+      if: startsWith(github.ref, 'refs/tags/')
+      with:
+        files: build-appimage/McuStudio-*.AppImage
+        generate_release_notes: true
 
   windows:
     runs-on: windows-latest

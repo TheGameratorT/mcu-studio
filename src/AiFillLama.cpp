@@ -54,10 +54,17 @@ bool loadRuntime(QString *whyNot)
     if (loaded)
         return true;
 
-    // The copy the build was pointed at, if any, then the system's: the name
+    // A copy shipped with the program (the AppImage's, in lib/ beside bin/),
+    // the one the build was pointed at, if any, then the system's: the name
     // its packages install (libonnxruntime.so.1 or .so.1.N) and the one that
-    // only comes with the development files. Windows ignores the version.
+    // only comes with the development files. Windows ignores the version and
+    // looks beside the program by itself.
     std::vector<std::unique_ptr<QLibrary>> candidates;
+#ifndef Q_OS_WIN
+    candidates.push_back(std::make_unique<QLibrary>(
+        QCoreApplication::applicationDirPath() + QStringLiteral("/../lib/onnxruntime"),
+        QStringLiteral("1")));
+#endif
 #ifdef MCU_ONNX_LIBRARY
     candidates.push_back(std::make_unique<QLibrary>(QStringLiteral(MCU_ONNX_LIBRARY)));
 #endif

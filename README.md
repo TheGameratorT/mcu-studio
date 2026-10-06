@@ -92,6 +92,22 @@ paru -S mcu-studio     # or your AUR helper of choice
 
 The `PKGBUILD` also lives in [`packaging/aur`](packaging/aur).
 
+### Other Linux distributions
+
+Download `McuStudio-<version>-x86_64.AppImage` from the
+[latest release](https://github.com/TheGameratorT/mcu-studio/releases), make
+it executable and run it:
+
+```sh
+chmod +x McuStudio-*-x86_64.AppImage
+./McuStudio-*-x86_64.AppImage
+```
+
+It is one file carrying the application, Qt and ONNX Runtime (for AI fill's
+local model), and nothing is installed. It needs an x86_64 distribution with
+glibc 2.35 or newer (Debian 12, Ubuntu 22.04, Fedora 36 and later). See
+[`packaging/appimage`](packaging/appimage/README.md) for how it is built.
+
 ### Windows
 
 Download `McuStudio-<version>-Setup.exe` from the
