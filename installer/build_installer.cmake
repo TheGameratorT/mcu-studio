@@ -44,7 +44,16 @@ set(VIVERSION "${APP_VERSION}.0")
 
 # makensis on Windows wants native (backslash) paths in its /D defines.
 file(TO_NATIVE_PATH "${DIST_DIR}" DIST_DIR_NATIVE)
-file(TO_NATIVE_PATH "${SOURCE_DIR}/LICENSE" LICENSE_NATIVE)
+# A Unicode NSIS installer reads the license page's text file in the ANSI code
+# page unless the file starts with a byte-order mark, which turns the UTF-8
+# (c) sign and curly quotes in LICENSE into "Â©" and similar. Give the installer
+# a copy with a UTF-8 BOM, written into the build dir so the source tree's
+# LICENSE (also shipped as-is in dist/) stays untouched.
+set(LICENSE_BOM_FILE "${CMAKE_BINARY_DIR}/LICENSE.installer.txt")
+string(ASCII 239 187 191 UTF8_BOM)
+file(READ "${SOURCE_DIR}/LICENSE" LICENSE_TEXT)
+file(WRITE "${LICENSE_BOM_FILE}" "${UTF8_BOM}${LICENSE_TEXT}")
+file(TO_NATIVE_PATH "${LICENSE_BOM_FILE}" LICENSE_NATIVE)
 file(TO_NATIVE_PATH "${SOURCE_DIR}/packaging/mcu-studio.ico" ICON_NATIVE)
 file(TO_NATIVE_PATH "${OUTPUT}" OUTPUT_NATIVE)
 
