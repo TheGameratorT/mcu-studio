@@ -97,7 +97,13 @@ jobs:
           mingw-w64-x86_64-qt6-base
           mingw-w64-x86_64-qt6-tools
           mingw-w64-x86_64-libjpeg-turbo
-          mingw-w64-x86_64-nsis
+    - name: Install NSIS
+      # The official NSIS, not MSYS2's package: that one's plugins sit in a
+      # directory makensis 3.13 doesn't search, which breaks the installer's
+      # Finish page (installer/build_installer.cmake finds it in its default
+      # install directory).
+      shell: pwsh
+      run: choco install nsis --no-progress -y
     - uses: actions/checkout@v7
     - name: Check tag matches CMake version
       if: startsWith(github.ref, 'refs/tags/')

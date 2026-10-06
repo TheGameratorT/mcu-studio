@@ -12,14 +12,24 @@ foreach(var CMAKE_BINARY_DIR SOURCE_DIR APP_VERSION)
     endif()
 endforeach()
 
-# On MSYS2 makensis comes from mingw-w64-x86_64-nsis; elsewhere it is on PATH
-# once the Nullsoft Scriptable Install System is installed.
+# Prefer the official NSIS installer's makensis over MSYS2's
+# mingw-w64-x86_64-nsis. The MSYS2 package ships its plugins under
+# share/nsis/Plugins/unicode, a layout makensis 3.13 does not search, so the
+# MUI2 Finish page dies with "Plugin not found, cannot call nsDialogs::Create"
+# (and no NSISDIR override fixes that). The official install has the layout
+# makensis expects. Fall back to PATH, so a makensis that works for you
+# elsewhere is still picked up. The default install locations are listed
+# literally because MSYS2's bash drops the ProgramFiles(x86) variable.
 find_program(MAKENSIS_EXECUTABLE
     NAMES makensis makensis.exe
+    HINTS
+        "C:/Program Files (x86)/NSIS"
+        "C:/Program Files/NSIS"
     DOC "NSIS makensis compiler")
 if(NOT MAKENSIS_EXECUTABLE)
-    message(FATAL_ERROR "makensis not found -- install NSIS "
-        "(MSYS2: pacman -S mingw-w64-x86_64-nsis)")
+    message(FATAL_ERROR "makensis not found -- install NSIS from "
+        "https://nsis.sourceforge.io/ (or `choco install nsis`) so that "
+        "makensis is on PATH or in the default install directory")
 endif()
 
 set(DIST_DIR "${CMAKE_BINARY_DIR}/dist")

@@ -8,13 +8,18 @@ automatically when a `vX.Y.Z` tag is pushed.
 ## Building locally (MSYS2 MINGW64 shell)
 
 ```bash
-pacman -S mingw-w64-x86_64-{gcc,cmake,ninja,qt6-base,qt6-tools,libjpeg-turbo,nsis}
+pacman -S mingw-w64-x86_64-{gcc,cmake,ninja,qt6-base,qt6-tools,libjpeg-turbo}
 cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build build                    # also populates build/dist via `deploy`
 cmake --build build --target installer # -> build/McuStudio-<version>-Setup.exe
 ```
 
-Outside MSYS2, install NSIS so `makensis` is on `PATH`.
+Install NSIS separately from <https://nsis.sourceforge.io/> (or
+`choco install nsis`); `build_installer.cmake` looks in its default install
+directory and then on `PATH`. Don't use MSYS2's `mingw-w64-x86_64-nsis`: its
+plugins are installed under `share/nsis/Plugins/unicode`, which makensis 3.13
+doesn't search, so the build fails with "Plugin not found, cannot call
+nsDialogs::Create".
 
 ## How it fits together
 
