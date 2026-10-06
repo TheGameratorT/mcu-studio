@@ -24,18 +24,18 @@ re-encode generation.
 
 This is the kind of recovery the tool can achieve.
 
-![A damaged photo as MCU Studio first opens it](docs/screenshots/recover-before.jpg)
+![A damaged photo in MCU Studio: as it opens, after re-alignment and color correction, with the remaining damage selected, and after AI fill](docs/screenshots/recover.gif)
 
-*The file as it opens. The top of the picture survives; below it the stream has
-lost alignment, so the rest decodes as the wrong content at the wrong DC level.*
-
-![The same photo after twenty-five repair steps](docs/screenshots/recover-after.jpg)
-
-*The same file after 25 steps: twelve MCU inserts to bring the stream back into
-alignment, thirteen DC offsets to pull the color back. Every step is a
-coefficient move, so nothing here has been re-encoded. A few bands of damage
-remain, and the repair steps that produced this are still an editable list.
-(Faces blacked out for this README.)*
+*A 53-step recovery, in four frames. First, the file as it opens: the top of
+the picture survives, and below it the stream has lost alignment, so the rest
+decodes as the wrong content at the wrong DC level. Second, the same file after
+52 steps: 23 MCU inserts and deletes to bring the stream back into alignment,
+and 29 DC offsets to pull the color back. Each of those is a coefficient move,
+so nothing has been re-encoded. The bands that remain are MCUs whose data is
+gone. The third frame selects them (1,434 MCUs in 28 regions, about a fifth of
+the picture), and the last shows step 53, an AI fill with the LaMa model
+running locally. That content is invented, not recovered. All 53 steps are
+still an editable list. (Faces blacked out for this README.)*
 
 ## Why the coefficient domain, and the bitstream under it?
 
