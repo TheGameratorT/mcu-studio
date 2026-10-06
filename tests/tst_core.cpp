@@ -41,7 +41,8 @@ QString writeTemp(const QTemporaryDir &dir, const QString &name, const QByteArra
 {
     const QString path = dir.filePath(name);
     QFile f(path);
-    f.open(QIODevice::WriteOnly);
+    if (!f.open(QIODevice::WriteOnly))
+        return {};
     f.write(bytes);
     return path;
 }

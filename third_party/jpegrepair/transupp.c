@@ -52,6 +52,8 @@ jcopy_markers_execute (j_decompress_ptr srcinfo, j_compress_ptr dstinfo,
 {
   jpeg_saved_marker_ptr marker;
 
+  (void) option;
+
   /* In the current implementation, we don't actually need to examine the
    * option flag here; we just copy everything that got saved.
    * But to avoid confusion, we do not output JFIF and Adobe APP14 markers
