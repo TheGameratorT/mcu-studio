@@ -5,8 +5,10 @@
 - CMake 3.21+
 - A C++17 compiler
 - Qt 6.2+ (`Widgets`, `Concurrent`, `Network`, and `Test` for the tests)
-- Optional: ONNX Runtime, for AI fill's local model. Without it everything
-  else builds and works, and that one model is listed as unavailable.
+- Optional: the ONNX Runtime headers, for AI fill's local model. The library
+  itself is opened at run time and is not linked, so a build made with the
+  headers still runs where ONNX Runtime is not installed; that one model is
+  then listed as unavailable, as it is in a build made without them.
 - libjpeg-turbo with development headers. IJG libjpeg works too, but the
   preview decoder is written to match libjpeg-turbo's output, so with IJG
   libjpeg the preview can differ from the exported file by a level here and there.
@@ -27,8 +29,8 @@ sudo dnf install cmake qt6-qtbase-devel libjpeg-turbo-devel
 # macOS
 brew install cmake qt libjpeg-turbo
 
-# Windows (MSYS2 MINGW64)
-pacman -S mingw-w64-x86_64-{gcc,cmake,ninja,qt6-base,qt6-tools,libjpeg-turbo}
+# Windows (MSYS2 UCRT64)
+pacman -S mingw-w64-ucrt-x86_64-{gcc,cmake,ninja,qt6-base,qt6-tools,libjpeg-turbo,onnxruntime}
 ```
 
 </details>
@@ -46,7 +48,10 @@ Options: `-DMCU_STUDIO_BUILD_TESTS=OFF`, `-DMCU_STUDIO_BUILD_CLI=OFF`,
 `-DMCU_STUDIO_FUZZ=ON` (with clang; see [`fuzz/`](../fuzz/CMakeLists.txt)), and
 `-DMCU_STUDIO_ONNX=AUTO|ON|OFF`. ONNX Runtime is found as a system package
 (`onnxruntime-cpu` on Arch); to use a release unpacked from the ONNX Runtime
-project instead, pass `-DONNXRUNTIME_ROOT=/path/to/it`.
+project instead, pass `-DONNXRUNTIME_ROOT=/path/to/it`, and the program tries
+that copy of the library before the system's. Packagers: list ONNX Runtime as
+a build dependency and an optional run-time one, and pass `ON` so a build
+without the headers fails instead of quietly losing the local model.
 
 ## Testing
 

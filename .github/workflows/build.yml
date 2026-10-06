@@ -87,16 +87,18 @@ jobs:
     steps:
     - uses: msys2/setup-msys2@v2
       with:
-        msystem: MINGW64
+        # UCRT64 rather than MINGW64: it is where MSYS2 packages ONNX Runtime.
+        msystem: UCRT64
         update: true
         install: >-
-          mingw-w64-x86_64-gcc
-          mingw-w64-x86_64-cmake
-          mingw-w64-x86_64-ninja
-          mingw-w64-x86_64-pkgconf
-          mingw-w64-x86_64-qt6-base
-          mingw-w64-x86_64-qt6-tools
-          mingw-w64-x86_64-libjpeg-turbo
+          mingw-w64-ucrt-x86_64-gcc
+          mingw-w64-ucrt-x86_64-cmake
+          mingw-w64-ucrt-x86_64-ninja
+          mingw-w64-ucrt-x86_64-pkgconf
+          mingw-w64-ucrt-x86_64-qt6-base
+          mingw-w64-ucrt-x86_64-qt6-tools
+          mingw-w64-ucrt-x86_64-libjpeg-turbo
+          mingw-w64-ucrt-x86_64-onnxruntime
     - name: Install NSIS
       # The official NSIS, not MSYS2's package: that one's plugins sit in a
       # directory makensis 3.13 doesn't search, which breaks the installer's
@@ -115,11 +117,24 @@ jobs:
           exit 1
         fi
     - name: Build
+      # ONNX is ON, not AUTO, so a build that lost the local AI Fill model
+      # fails here instead of shipping without it.
       run: |
-        cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+        cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DMCU_STUDIO_ONNX=ON
         cmake --build build
     - name: Unit tests
       run: QT_QPA_PLATFORM=offscreen ctest --test-dir build --output-on-failure
+    - name: Check the local model's runtime is deployed
+      # ONNX Runtime is opened at run time, so no link step shows it missing.
+      # ldd looks beside the DLL first, so anything it still finds under
+      # /ucrt64 is a library dist/ lacks. The test then opens it from dist/;
+      # the test program is taken out again before dist/ is packed.
+      run: |
+        test -f build/dist/onnxruntime.dll
+        if ldd build/dist/onnxruntime.dll | grep '/ucrt64/'; then exit 1; fi
+        cp build/bin/mcu_tests.exe build/dist/
+        (cd build/dist && MCU_STUDIO_EXPECT_ONNX=1 QT_QPA_PLATFORM=offscreen ./mcu_tests.exe localModelRuntime)
+        rm build/dist/mcu_tests.exe
     - name: Build installer
       run: cmake --build build --target installer
     - name: Upload installer artifact

@@ -175,8 +175,9 @@ extern const char *const kDefaultCloudModel;
 // the file must hash to.
 extern const char *const kLamaModelUrl;
 extern const char *const kLamaModelSha256;
-// Whether this build can run the local model at all.
-bool localModelSupported();
+// Whether the local model can run at all: this build has to know ONNX Runtime
+// and the library has to be installed, which is looked up when this is called.
+bool localModelSupported(QString *whyNot = nullptr);
 QString defaultLamaModelPath();
 
 // Every provider, available or not, in the order the interface lists them.

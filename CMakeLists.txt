@@ -28,15 +28,19 @@ include(GNUInstallDirs)
 find_package(Qt6 6.2 REQUIRED COMPONENTS Widgets Concurrent Network)
 find_package(JPEG REQUIRED)
 
-# AI Fill's local model runs through ONNX Runtime. Without it the program
-# builds and works as before, and the local model is listed as unavailable
-# with the reason.
+# AI Fill's local model runs through ONNX Runtime. Only its headers are needed
+# to build: the library is opened at run time, so a build with it still starts
+# where it is not installed, and lists the local model as unavailable with the
+# reason. A build without the headers does the same, for good.
 set(MCU_STUDIO_ONNX "AUTO" CACHE STRING "Use ONNX Runtime for the local AI Fill model (AUTO, ON, OFF)")
 set_property(CACHE MCU_STUDIO_ONNX PROPERTY STRINGS AUTO ON OFF)
 # ONNXRUNTIME_ROOT points at an unpacked release from the ONNX Runtime
 # project, whose own CMake package file does not match its layout; without it
-# the system's package is looked for.
+# the system's package is looked for. The library of such a release is not
+# where the system looks, so its path is kept for the program to try first.
 set(ONNXRUNTIME_ROOT "" CACHE PATH "An unpacked ONNX Runtime release to use instead of a system package")
+set(MCU_ONNX_INCLUDE_DIRS "")
+set(MCU_ONNX_LIBRARY "")
 if(NOT MCU_STUDIO_ONNX STREQUAL "OFF")
     if(ONNXRUNTIME_ROOT)
         find_path(ONNXRUNTIME_INCLUDE_DIR onnxruntime_cxx_api.h
@@ -44,22 +48,31 @@ if(NOT MCU_STUDIO_ONNX STREQUAL "OFF")
             NO_DEFAULT_PATH)
         find_library(ONNXRUNTIME_LIBRARY onnxruntime
             PATHS "${ONNXRUNTIME_ROOT}/lib" "${ONNXRUNTIME_ROOT}/lib64" NO_DEFAULT_PATH)
-        if(ONNXRUNTIME_INCLUDE_DIR AND ONNXRUNTIME_LIBRARY)
-            add_library(onnxruntime::onnxruntime UNKNOWN IMPORTED)
-            set_target_properties(onnxruntime::onnxruntime PROPERTIES
-                IMPORTED_LOCATION "${ONNXRUNTIME_LIBRARY}"
-                INTERFACE_INCLUDE_DIRECTORIES "${ONNXRUNTIME_INCLUDE_DIR}")
-            set(onnxruntime_FOUND TRUE)
+        if(ONNXRUNTIME_INCLUDE_DIR)
+            set(MCU_ONNX_INCLUDE_DIRS "${ONNXRUNTIME_INCLUDE_DIR}")
+        endif()
+        # Not on Windows, where this finds the import library and the DLL is
+        # shipped beside the program instead (installer/windows.cmake).
+        if(ONNXRUNTIME_LIBRARY AND NOT WIN32)
+            set(MCU_ONNX_LIBRARY "${ONNXRUNTIME_LIBRARY}")
         endif()
     else()
         find_package(onnxruntime QUIET)
+        if(TARGET onnxruntime::onnxruntime)
+            get_target_property(MCU_ONNX_INCLUDE_DIRS
+                onnxruntime::onnxruntime INTERFACE_INCLUDE_DIRECTORIES)
+        endif()
+        if(NOT MCU_ONNX_INCLUDE_DIRS)
+            find_path(MCU_ONNX_INCLUDE_DIRS onnxruntime_cxx_api.h PATH_SUFFIXES onnxruntime)
+        endif()
     endif()
-    if(MCU_STUDIO_ONNX STREQUAL "ON" AND NOT onnxruntime_FOUND)
-        message(FATAL_ERROR "MCU_STUDIO_ONNX is ON but ONNX Runtime was not found.")
+    if(MCU_STUDIO_ONNX STREQUAL "ON" AND NOT MCU_ONNX_INCLUDE_DIRS)
+        message(FATAL_ERROR "MCU_STUDIO_ONNX is ON but the ONNX Runtime headers were not found.")
     endif()
 endif()
-if(onnxruntime_FOUND)
-    message(STATUS "ONNX Runtime found; the local AI Fill model is enabled.")
+if(MCU_ONNX_INCLUDE_DIRS)
+    message(STATUS "ONNX Runtime headers found; the local AI Fill model is enabled "
+                   "wherever the library is installed.")
 else()
     message(STATUS "ONNX Runtime not used; the local AI Fill model is disabled.")
 endif()
@@ -156,9 +169,12 @@ add_library(mcu_core STATIC
 target_include_directories(mcu_core PUBLIC src)
 target_link_libraries(mcu_core PUBLIC Qt6::Gui Qt6::Concurrent Qt6::Network jpegrepair_core)
 target_compile_definitions(mcu_core PUBLIC MCU_STUDIO_VERSION="${PROJECT_VERSION}")
-if(onnxruntime_FOUND)
-    target_link_libraries(mcu_core PRIVATE onnxruntime::onnxruntime)
+if(MCU_ONNX_INCLUDE_DIRS)
+    target_include_directories(mcu_core SYSTEM PRIVATE ${MCU_ONNX_INCLUDE_DIRS})
     target_compile_definitions(mcu_core PRIVATE MCU_HAVE_ONNX)
+    if(MCU_ONNX_LIBRARY)
+        target_compile_definitions(mcu_core PRIVATE MCU_ONNX_LIBRARY="${MCU_ONNX_LIBRARY}")
+    endif()
 endif()
 set_target_properties(mcu_core PROPERTIES AUTOMOC OFF)
 if(MSVC)

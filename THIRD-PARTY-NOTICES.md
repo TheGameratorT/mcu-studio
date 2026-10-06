@@ -105,10 +105,16 @@ shipped by your distribution or vendor. Nothing from it is redistributed here.
 
 ---
 
-## ONNX Runtime — optional, linked, not bundled
+## ONNX Runtime — optional, loaded at run time, bundled only in the Windows installer
 
-Used when found at build time, to run AI fill's local model. MIT License; see
-<https://github.com/microsoft/onnxruntime>. Not redistributed here.
+Built against its headers when they are found, and opened at run time if it
+is installed, to run AI fill's local model. MIT License, Copyright (c)
+Microsoft Corporation; see <https://github.com/microsoft/onnxruntime>.
+
+Not part of this repository. The Windows installer carries it as MSYS2 builds
+it, with the libraries that build needs (ONNX and Abseil, Apache License 2.0;
+Protocol Buffers and RE2, BSD-3-Clause), and puts their license texts in the
+`licenses` folder beside the program.
 
 ---
 

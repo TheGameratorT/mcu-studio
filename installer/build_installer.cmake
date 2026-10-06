@@ -13,7 +13,7 @@ foreach(var CMAKE_BINARY_DIR SOURCE_DIR APP_VERSION)
 endforeach()
 
 # Prefer the official NSIS installer's makensis over MSYS2's
-# mingw-w64-x86_64-nsis. The MSYS2 package ships its plugins under
+# NSIS package. The MSYS2 package ships its plugins under
 # share/nsis/Plugins/unicode, a layout makensis 3.13 does not search, so the
 # MUI2 Finish page dies with "Plugin not found, cannot call nsDialogs::Create"
 # (and no NSISDIR override fixes that). The official install has the layout

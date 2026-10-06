@@ -7,8 +7,10 @@ pkgbase = mcu-studio
 	license = GPL-3.0-only
 	makedepends = cmake
 	makedepends = qt6-tools
+	makedepends = onnxruntime
 	depends = qt6-base
 	depends = libjpeg-turbo
+	optdepends = onnxruntime: AI fill on this computer (the LaMa model)
 	source = mcu-studio-1.2.0.tar.gz::https://github.com/TheGameratorT/mcu-studio/archive/v1.2.0.tar.gz
 	sha256sums = 1c3c251030057b757a0c13080dbf92e18cf4c3e686e798fa287ced31961bef8f
 

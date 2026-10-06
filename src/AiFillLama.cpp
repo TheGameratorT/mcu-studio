@@ -14,8 +14,13 @@
 #include <QFileInfo>
 
 #ifdef MCU_HAVE_ONNX
+// ONNX Runtime is opened when the local model is first asked about rather than
+// linked, so the program starts without it and says so. The headers are told
+// not to look the library up themselves; loadRuntime() hands them its API.
+#define ORT_API_MANUAL_INIT
 #include <onnxruntime_cxx_api.h>
 
+#include <QLibrary>
 #include <QMutex>
 #include <QMutexLocker>
 
@@ -37,6 +42,62 @@ QString tr(const char *text)
 
 // The exported model's input is fixed at this size.
 constexpr int kLamaSide = 512;
+
+#ifdef MCU_HAVE_ONNX
+// Opens ONNX Runtime once. A failure is not remembered, so installing the
+// library while the program runs is enough.
+bool loadRuntime(QString *whyNot)
+{
+    static QMutex mutex;
+    static bool loaded = false;
+    QMutexLocker lock(&mutex);
+    if (loaded)
+        return true;
+
+    // The copy the build was pointed at, if any, then the system's: the name
+    // its packages install (libonnxruntime.so.1 or .so.1.N) and the one that
+    // only comes with the development files. Windows ignores the version.
+    std::vector<std::unique_ptr<QLibrary>> candidates;
+#ifdef MCU_ONNX_LIBRARY
+    candidates.push_back(std::make_unique<QLibrary>(QStringLiteral(MCU_ONNX_LIBRARY)));
+#endif
+    for (const QString &version : {QStringLiteral("1"),
+                                   QStringLiteral("1.%1").arg(ORT_API_VERSION), QString()}) {
+        candidates.push_back(
+            std::make_unique<QLibrary>(QStringLiteral("onnxruntime"), version));
+    }
+
+#ifdef Q_OS_WIN
+    // It ships with the program there, so only a damaged installation lacks it.
+    QString problem = tr("ONNX Runtime, which the local model needs, is missing from this "
+                         "installation. Install MCU Studio again to restore it.");
+#else
+    QString problem = tr("ONNX Runtime, which the local model needs, is not installed. "
+                         "Install it (the onnxruntime package on most systems) to use the "
+                         "local model.");
+#endif
+    for (const auto &library : candidates) {
+        using GetApiBase = const OrtApiBase *(ORT_API_CALL *)(void);
+        const auto getApiBase = reinterpret_cast<GetApiBase>(library->resolve("OrtGetApiBase"));
+        const OrtApiBase *base = getApiBase ? getApiBase() : nullptr;
+        if (!base)
+            continue;
+        // Null when the library is older than the headers this was built with.
+        if (const OrtApi *api = base->GetApi(ORT_API_VERSION)) {
+            Ort::InitApi(api);
+            loaded = true;
+            return true;
+        }
+        problem = tr("The installed ONNX Runtime (%1) is too old for this copy of MCU Studio, "
+                     "which needs 1.%2 or newer.")
+                      .arg(QString::fromUtf8(base->GetVersionString()))
+                      .arg(ORT_API_VERSION);
+    }
+    if (whyNot)
+        *whyNot = problem;
+    return false;
+}
+#endif
 
 class LamaProvider : public Provider
 {
@@ -64,12 +125,8 @@ public:
 
     bool available(QString *whyNot) const override
     {
-#ifndef MCU_HAVE_ONNX
-        if (whyNot)
-            *whyNot = tr("This copy of MCU Studio was built without ONNX Runtime, which the "
-                         "local model needs.");
-        return false;
-#else
+        if (!localModelSupported(whyNot))
+            return false;
         const QFileInfo file(m_modelPath);
         if (!file.isFile() || file.size() == 0) {
             if (whyNot)
@@ -78,7 +135,6 @@ public:
             return false;
         }
         return true;
-#endif
     }
 
     std::optional<QImage> inpaint(const Request &request, const std::function<bool()> &,
@@ -89,6 +145,8 @@ public:
         available(error);
         return std::nullopt;
 #else
+        if (!loadRuntime(error))
+            return std::nullopt;
         try {
             return infer(request);
         } catch (const Ort::Exception &e) {
@@ -290,11 +348,14 @@ private:
 
 } // namespace
 
-bool localModelSupported()
+bool localModelSupported(QString *whyNot)
 {
 #ifdef MCU_HAVE_ONNX
-    return true;
+    return loadRuntime(whyNot);
 #else
+    if (whyNot)
+        *whyNot = tr("This copy of MCU Studio was built without ONNX Runtime, which the "
+                     "local model needs.");
     return false;
 #endif
 }

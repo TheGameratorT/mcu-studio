@@ -104,7 +104,7 @@ without taking over as the default handler. See
 ## Building
 
 Needs CMake 3.21+, a C++17 compiler, Qt 6.2+ and libjpeg-turbo. ONNX Runtime
-is optional (AI fill's local model).
+is optional, both to build and to run (AI fill's local model).
 
 ```sh
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release

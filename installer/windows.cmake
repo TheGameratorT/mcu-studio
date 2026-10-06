@@ -22,11 +22,42 @@ else()
     set(MCU_STUDIO_DEPLOY_DEPENDS mcu-studio)
 endif()
 
+# ONNX Runtime is opened at run time (src/AiFillLama.cpp), so nothing links it
+# and the ldd sweep below would never find it: it is copied here by name, and
+# the sweep then brings in what it needs in turn (abseil, protobuf, re2, ...).
+# Windows has nowhere else to get it from, so without this the local AI Fill
+# model is listed as unavailable.
+set(MCU_STUDIO_DEPLOY_ONNX)
+if(MCU_ONNX_INCLUDE_DIRS)
+    if(ONNXRUNTIME_ROOT)
+        file(GLOB _onnx_dlls "${ONNXRUNTIME_ROOT}/lib/onnxruntime*.dll"
+                             "${ONNXRUNTIME_ROOT}/bin/onnxruntime*.dll")
+        if(_onnx_dlls)
+            set(MCU_STUDIO_DEPLOY_ONNX
+                COMMAND ${CMAKE_COMMAND} -E copy ${_onnx_dlls} "${DIST_DIR}/")
+        endif()
+    elseif(TARGET onnxruntime::onnxruntime)
+        set(MCU_STUDIO_DEPLOY_ONNX
+            COMMAND ${CMAKE_COMMAND} -E copy
+                $<TARGET_FILE:onnxruntime::onnxruntime> "${DIST_DIR}/")
+        # The license texts MSYS2 installs for it and for what it brings in.
+        if(MINGW)
+            list(APPEND MCU_STUDIO_DEPLOY_ONNX
+                COMMAND bash -c "from='$<TARGET_FILE_DIR:onnxruntime::onnxruntime>/../share/licenses'; for p in onnxruntime onnx abseil-cpp protobuf re2; do if [ -d \"$from/$p\" ]; then mkdir -p '${DIST_DIR}/licenses' && cp -r \"$from/$p\" '${DIST_DIR}/licenses/'; fi; done")
+        endif()
+    endif()
+    if(NOT MCU_STUDIO_DEPLOY_ONNX)
+        message(WARNING "The ONNX Runtime DLL was not found; the installer will "
+                        "ship without the local AI Fill model.")
+    endif()
+endif()
+
 add_custom_target(deploy ALL
     DEPENDS ${MCU_STUDIO_DEPLOY_DEPENDS}
     COMMAND ${CMAKE_COMMAND} -E make_directory "${DIST_DIR}"
     COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:mcu-studio> "${DIST_DIR}/"
     ${MCU_STUDIO_DEPLOY_CLI}
+    ${MCU_STUDIO_DEPLOY_ONNX}
     COMMAND "${WINDEPLOYQT_EXECUTABLE}"
         --no-translations --no-system-d3d-compiler --no-opengl-sw
         "${DIST_DIR}/mcu-studio.exe"

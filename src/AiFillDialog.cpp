@@ -159,10 +159,10 @@ bool editSettings(QWidget *parent, aifill::Settings *settings)
     const auto refreshLama = [=] {
         const QString path = lamaPath->text().trimmed().isEmpty() ? aifill::defaultLamaModelPath()
                                                                  : lamaPath->text().trimmed();
-        if (!aifill::localModelSupported()) {
+        QString whyNot;
+        if (!aifill::localModelSupported(&whyNot)) {
             lamaState->setStyleSheet(warningTextStyle());
-            lamaState->setText(AiFillDialog::tr(
-                "Not available: this copy of MCU Studio was built without ONNX Runtime."));
+            lamaState->setText(AiFillDialog::tr("Not available. %1").arg(whyNot));
         } else if (QFileInfo(path).isFile()) {
             lamaState->setStyleSheet(QString());
             lamaState->setText(AiFillDialog::tr("Installed."));
@@ -171,9 +171,10 @@ bool editSettings(QWidget *parent, aifill::Settings *settings)
             lamaState->setText(AiFillDialog::tr("Not installed yet."));
         }
     };
-    lamaPath->setEnabled(aifill::localModelSupported());
-    lamaBrowse->setEnabled(aifill::localModelSupported());
-    lamaDownload->setEnabled(aifill::localModelSupported());
+    const bool lamaSupported = aifill::localModelSupported();
+    lamaPath->setEnabled(lamaSupported);
+    lamaBrowse->setEnabled(lamaSupported);
+    lamaDownload->setEnabled(lamaSupported);
     QObject::connect(lamaPath, &QLineEdit::textChanged, &dialog, refreshLama);
     QObject::connect(lamaBrowse, &QPushButton::clicked, &dialog, [=, &dialog] {
         const QString path = QFileDialog::getOpenFileName(

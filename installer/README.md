@@ -1,14 +1,18 @@
 # Windows installer
 
 An NSIS setup exe carrying `mcu-studio.exe` and everything it needs at runtime:
-the Qt DLLs, the MinGW runtime, and the Qt image-format plugins. CI builds it on
+the Qt DLLs, the MinGW runtime, the Qt image-format plugins, and ONNX Runtime
+for AI fill's local model. CI builds it on
 every push (see `.github/workflows/build.yml`); releases attach it
 automatically when a `vX.Y.Z` tag is pushed.
 
-## Building locally (MSYS2 MINGW64 shell)
+## Building locally (MSYS2 UCRT64 shell)
+
+UCRT64 rather than MINGW64, because it is the environment MSYS2 packages ONNX
+Runtime for.
 
 ```bash
-pacman -S mingw-w64-x86_64-{gcc,cmake,ninja,qt6-base,qt6-tools,libjpeg-turbo}
+pacman -S mingw-w64-ucrt-x86_64-{gcc,cmake,ninja,qt6-base,qt6-tools,libjpeg-turbo,onnxruntime}
 cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build build                    # also populates build/dist via `deploy`
 cmake --build build --target installer # -> build/McuStudio-<version>-Setup.exe
@@ -16,7 +20,7 @@ cmake --build build --target installer # -> build/McuStudio-<version>-Setup.exe
 
 Install NSIS separately from <https://nsis.sourceforge.io/> (or
 `choco install nsis`); `build_installer.cmake` looks in its default install
-directory and then on `PATH`. Don't use MSYS2's `mingw-w64-x86_64-nsis`: its
+directory and then on `PATH`. Don't use MSYS2's NSIS package: its
 plugins are installed under `share/nsis/Plugins/unicode`, which makensis 3.13
 doesn't search, so the build fails with "Plugin not found, cannot call
 nsDialogs::Create".
@@ -25,7 +29,9 @@ nsDialogs::Create".
 
 - `windows.cmake` — included by the top-level CMakeLists on Windows. The
   `deploy` target copies the exe into `build/dist/` and resolves its Qt DLLs
-  (windeployqt) and MinGW/third-party DLLs (ldd). The `installer` target runs
+  (windeployqt) and MinGW/third-party DLLs (ldd). ONNX Runtime is opened at
+  run time, so no DLL links it and ldd cannot find it: it is copied by name,
+  with its license texts, before the sweep. The `installer` target runs
   `build_installer.cmake`.
 - `build_installer.cmake` — script mode; finds `makensis` and compiles
   `mcu-studio.nsi`, passing the version and every path (`dist/`, the LICENSE,

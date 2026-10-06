@@ -110,6 +110,16 @@ class CoreTest : public QObject
     Q_OBJECT
 
 private slots:
+    // Whether ONNX Runtime opens, where a build is meant to have it: CI sets
+    // MCU_STUDIO_EXPECT_ONNX and runs this beside the files the installer ships.
+    void localModelRuntime()
+    {
+        if (!qEnvironmentVariableIsSet("MCU_STUDIO_EXPECT_ONNX"))
+            QSKIP("MCU_STUDIO_EXPECT_ONNX is not set");
+        QString whyNot;
+        QVERIFY2(aifill::localModelSupported(&whyNot), qPrintable(whyNot));
+    }
+
     // --- the engine ---------------------------------------------------------
 
     void renderMatchesLibjpeg_data()
