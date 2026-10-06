@@ -76,12 +76,11 @@ that rank the likely fixes for you to preview.
 
 ## Documentation
 
-| | |
+| Document | Covers |
 |---|---|
 | [Features](docs/FEATURES.md) | Every tool in detail, and the terms used. |
 | [How it works](docs/HOW-IT-WORKS.md) | The engine, why damage looks the way it does, donor headers, fills, color matching, performance. |
 | [Building](docs/BUILDING.md) | Prerequisites, build options, tests, source layout. |
-| [Roadmap](docs/ROADMAP.md) | What is planned. |
 
 ## Installing
 

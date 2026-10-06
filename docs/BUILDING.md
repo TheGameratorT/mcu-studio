@@ -72,6 +72,6 @@ tests/                      the test suite
 fuzz/                       libFuzzer harnesses and their seed corpus
 packaging/                  desktop entry, icons, AUR PKGBUILD
 installer/                  Windows NSIS installer
-docs/                       features, how it works, building, the roadmap, screenshots
+docs/                       features, how it works, building, screenshots
 .github/workflows/          CI and releases
 ```
