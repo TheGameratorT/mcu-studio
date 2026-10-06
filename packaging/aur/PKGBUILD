@@ -17,7 +17,7 @@ license=('GPL-3.0-only')
 depends=('qt6-base' 'libjpeg-turbo')
 makedepends=('cmake' 'qt6-tools')
 source=("$pkgname-$pkgver.tar.gz::$_repo_url/archive/v$pkgver.tar.gz")
-sha256sums=('d4f677511f448069807bcad64d63e7a3ef814b9f1f558a855f2b61806397693c')
+sha256sums=('1c3c251030057b757a0c13080dbf92e18cf4c3e686e798fa287ced31961bef8f')
 _srcdir="$pkgname-$pkgver"
 
 build() {
